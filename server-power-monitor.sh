@@ -325,10 +325,14 @@ generate_daily_report() {
 }
 
 maybe_send_scheduled_report() {
-  local now_h now_m today last_sent
+  local now_h
+  local now_m
+  local today
+  local last_sent
   now_h="$(date +%H)"
   now_m="$(date +%M)"
   today="$(date +%F)"
+
   
   # 1. Daily Report
   last_sent=""
@@ -360,8 +364,10 @@ maybe_send_scheduled_report() {
 }
 
 rollover_if_new_day() {
-  local current_date today_date
+  local current_date
+  local today_date
   current_date="$(date +%F)"
+
   today_date="$(basename "$TODAY_FILE" | sed 's/^today_//; s/\.env$//')"
   if [[ "$current_date" != "$today_date" ]]; then
     generate_daily_report "$today_date"

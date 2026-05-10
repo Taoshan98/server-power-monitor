@@ -10,17 +10,19 @@ LOCAL_CONFIG="$PROJECT_DIR/server-power-monitor.conf"
 echo "--- Server Power Monitor Setup ---"
 
 # Load existing configuration as base if available
+# shellcheck disable=SC1090
 if [ -f "$LOCAL_CONFIG" ]; then
     source "$LOCAL_CONFIG"
+# shellcheck disable=SC1090
 elif [ -f "$CONFIG_TARGET" ]; then
     source "$CONFIG_TARGET"
 fi
 
 # Ask for confirmation for system or local installation
-read -p "Install as a system service? (y/n) " -n 1 -r
+read -r -p "Install as a system service? (y/n) " -n 1 -r
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
-    read -p "Enter installation prefix (default: /usr/local): " PREFIX
+    read -r -p "Enter installation prefix (default: /usr/local): " PREFIX
     PREFIX=${PREFIX:-/usr/local}
     echo "Installing to system in $PREFIX..."
     
@@ -30,13 +32,14 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
     # Telegram configuration
     if [[ -z "${TELEGRAM_BOT_TOKEN:-}" ]]; then
         echo ""
-        read -p "Configure Telegram now? (y/n) " -n 1 -r
+        read -r -p "Configure Telegram now? (y/n) " -n 1 -r
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
-            read -p "Enter Telegram Bot Token: " TELEGRAM_BOT_TOKEN
-            read -p "Enter Telegram Chat ID: " TELEGRAM_CHAT_ID
-            read -p "Interval for intermediate reports in hours? (default 6): " TELEGRAM_REPORT_INTERVAL_HOURS
+            read -r -p "Enter Telegram Bot Token: " TELEGRAM_BOT_TOKEN
+            read -r -p "Enter Telegram Chat ID: " TELEGRAM_CHAT_ID
+            read -r -p "Interval for intermediate reports in hours? (default 6): " TELEGRAM_REPORT_INTERVAL_HOURS
             TELEGRAM_REPORT_INTERVAL_HOURS=${TELEGRAM_REPORT_INTERVAL_HOURS:-6}
+
             
             sudo sed -i "s/TELEGRAM_ENABLED=0/TELEGRAM_ENABLED=1/" "$CONFIG_TARGET"
             sudo sed -i "s/TELEGRAM_BOT_TOKEN=\"\"/TELEGRAM_BOT_TOKEN=\"$TELEGRAM_BOT_TOKEN\"/" "$CONFIG_TARGET"
