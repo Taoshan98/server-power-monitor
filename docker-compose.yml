@@ -1,7 +1,8 @@
 services:
   power-monitor:
-    build: .
+    image: ghcr.io/taoshan98/server-power-monitor:main
     container_name: server-power-monitor
+
     privileged: true
     network_mode: host
     volumes:
