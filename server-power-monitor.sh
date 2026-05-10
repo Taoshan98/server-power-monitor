@@ -262,27 +262,32 @@ calc_cost() {
 generate_status_report() {
   local label="$1"
   load_today
-  local msg="📊 *Status Update* (${label})%0AHost: ${HOST_LABEL}%0A"
-  local total_j=0
-
+  local msg
+  local total_j
+  msg="📊 *Status Update* (${label})%0AHost: ${HOST_LABEL}%0A"
+  total_j=0
   
   for id in "${!SENSOR_PATHS[@]}"; do
-    j_var="J_$id"
-    peak_var="PEAK_$id"
+    local j_var="J_$id"
+    local peak_var="PEAK_$id"
     local j="${!j_var:-0}"
     local peak="${!peak_var:-0}"
     total_j=$(awk -v a="$total_j" -v b="$j" 'BEGIN { print a+b }')
     
-    local friendly=$(get_friendly_name "$id")
-    local kwh=$(awk -v j="$j" 'BEGIN { printf "%.4f", j/3600000 }')
+    local friendly
+    local kwh
+    friendly=$(get_friendly_name "$id")
+    kwh=$(awk -v j="$j" 'BEGIN { printf "%.4f", j/3600000 }')
     msg+="%0A*${friendly}*:%0A- Consumption: ${kwh} kWh%0A- Peak: ${peak} W"
-
 
   done
   
-  local total_kwh=$(awk -v j="$total_j" 'BEGIN { printf "%.4f", j/3600000 }')
-  local cost=$(calc_cost "$total_kwh")
+  local total_kwh
+  local cost
+  total_kwh=$(awk -v j="$total_j" 'BEGIN { printf "%.4f", j/3600000 }')
+  cost=$(calc_cost "$total_kwh")
   msg+="%0A%0A*TOTAL*: ${total_kwh} kWh%0A*Cost*: ${cost} ${CURRENCY}"
+
 
   
   send_telegram "$msg"
@@ -296,27 +301,33 @@ generate_daily_report() {
   # shellcheck disable=SC1090
   source "$report_file"
   
-  local msg="🔌 *Daily Energy Report*%0AHost: ${HOST_LABEL}%0ADate: ${report_date}%0A"
-  local total_j=0
-
+  local msg
+  local total_j
+  msg="🔌 *Daily Energy Report*%0AHost: ${HOST_LABEL}%0ADate: ${report_date}%0A"
+  total_j=0
   
   for id in "${!SENSOR_PATHS[@]}"; do
-    j_var="J_$id"
-    peak_var="PEAK_$id"
+    local j_var="J_$id"
+    local peak_var="PEAK_$id"
     local j="${!j_var:-0}"
     local peak="${!peak_var:-0}"
     total_j=$(awk -v a="$total_j" -v b="$j" 'BEGIN { print a+b }')
     
-    local friendly=$(get_friendly_name "$id")
-    local kwh=$(awk -v j="$j" 'BEGIN { printf "%.4f", j/3600000 }')
+    local friendly
+    local kwh
+    friendly=$(get_friendly_name "$id")
+    kwh=$(awk -v j="$j" 'BEGIN { printf "%.4f", j/3600000 }')
     msg+="%0A*${friendly}*:%0A- Consumption: ${kwh} kWh%0A- Peak: ${peak} W"
 
 
   done
   
-  local total_kwh=$(awk -v j="$total_j" 'BEGIN { printf "%.4f", j/3600000 }')
-  local cost=$(calc_cost "$total_kwh")
+  local total_kwh
+  local cost
+  total_kwh=$(awk -v j="$total_j" 'BEGIN { printf "%.4f", j/3600000 }')
+  cost=$(calc_cost "$total_kwh")
   msg+="%0A%0A*TOTAL*: ${total_kwh} kWh%0A*Estimated Cost*: ${cost} ${CURRENCY}"
+
 
   
   echo "[$(date '+%F %T')] REPORT ${report_date} kWh=${total_kwh} cost=${cost} ${CURRENCY}" >> "$LOG_FILE"

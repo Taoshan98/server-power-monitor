@@ -9,13 +9,6 @@ A professional, lightweight telemetry system for real-time power monitoring on L
 
 ---
 
-## 📸 Preview
-
-> [!TIP]
-> *Add a screenshot or a GIF of your terminal here to show off the real-time dashboard!*
-
----
-
 ## ✨ Key Features
 
 - **🛡️ Comprehensive Monitoring**: 

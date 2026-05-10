@@ -13,10 +13,10 @@ echo "--- Server Power Monitor Setup ---"
 # shellcheck disable=SC1090
 if [ -f "$LOCAL_CONFIG" ]; then
     source "$LOCAL_CONFIG"
-# shellcheck disable=SC1090
 elif [ -f "$CONFIG_TARGET" ]; then
     source "$CONFIG_TARGET"
 fi
+
 
 # Ask for confirmation for system or local installation
 read -r -p "Install as a system service? (y/n) " -n 1 -r
