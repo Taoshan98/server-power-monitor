@@ -1,55 +1,40 @@
 #!/usr/bin/env bash
+# server-power-monitor.sh — Energy usage monitor with Telegram reports
 set -euo pipefail
 export LC_NUMERIC=C
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Configuration Priority: 
-# 1. Environment Variable CONFIG_FILE
-# 2. Local server-power-monitor.conf
-# 3. System /etc/server-power-monitor.conf
-if [[ -z "${CONFIG_FILE:-}" ]]; then
-  if [[ -f "$SCRIPT_DIR/server-power-monitor.conf" ]]; then
-    CONFIG_FILE="$SCRIPT_DIR/server-power-monitor.conf"
+# --- CONFIG / STATE / LOG RESOLUTION ---
+# Priority: env var → local → system default
+
+_resolve_path() {
+  local env_var="$1" local_name="$2" system_path="$3"
+  if [[ -n "${!env_var:-}" ]]; then
+    echo "${!env_var}"
+  elif [[ -f "$SCRIPT_DIR/$local_name" ]]; then
+    echo "$SCRIPT_DIR/$local_name"
   else
-    CONFIG_FILE="/etc/server-power-monitor.conf"
+    echo "$system_path"
   fi
-fi
+}
 
-# State Directory Priority:
-# 1. Environment Variable STATE_DIR
-# 2. ./state (if local .conf exists or if not in a systemd service)
-# 3. /var/lib/server-power-monitor (system default)
+IS_LOCAL=$([[ -f "$SCRIPT_DIR/server-power-monitor.conf" ]] && echo 1 || echo 0)
 
-if [[ -z "${STATE_DIR:-}" ]]; then
-  if [[ -f "$SCRIPT_DIR/server-power-monitor.conf" ]] || [[ -z "${INVOCATION_ID:-}" ]]; then
-    STATE_DIR="$SCRIPT_DIR/state"
-  else
-    STATE_DIR="/var/lib/server-power-monitor"
-  fi
-fi
-
-# Log Priority:
-# 1. Environment Variable LOG_FILE
-# 2. ./server-power-monitor.log
-# 3. /var/log/server-power-monitor.log
-
-if [[ -z "${LOG_FILE:-}" ]]; then
-  if [[ -f "$SCRIPT_DIR/server-power-monitor.conf" ]] || [[ -z "${INVOCATION_ID:-}" ]]; then
-    LOG_FILE="$SCRIPT_DIR/server-power-monitor.log"
-  else
-    LOG_FILE="/var/log/server-power-monitor.log"
-  fi
-fi
-
+CONFIG_FILE=$(_resolve_path CONFIG_FILE server-power-monitor.conf /etc/server-power-monitor.conf)
+STATE_DIR=$(_resolve_path STATE_DIR "" "$(
+  [[ "$IS_LOCAL" == 1 || -z "${INVOCATION_ID:-}" ]] \
+    && echo "$SCRIPT_DIR/state" || echo "/var/lib/server-power-monitor"
+)")
+LOG_FILE=$(_resolve_path LOG_FILE "" "$(
+  [[ "$IS_LOCAL" == 1 || -z "${INVOCATION_ID:-}" ]] \
+    && echo "$SCRIPT_DIR/server-power-monitor.log" || echo "/var/log/server-power-monitor.log"
+)")
 
 mkdir -p "$STATE_DIR"
+[[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
 
-if [[ -f "$CONFIG_FILE" ]]; then
-  # shellcheck disable=SC1090
-  source "$CONFIG_FILE"
-fi
-
+# --- DEFAULTS ---
 : "${SAMPLE_INTERVAL:=5}"
 : "${TARIFF_EUR_KWH:=0.30}"
 : "${CURRENCY:=EUR}"
@@ -60,506 +45,353 @@ fi
 : "${REPORT_MINUTE:=55}"
 : "${TELEGRAM_REPORT_INTERVAL_HOURS:=6}"
 : "${HOST_LABEL:=$(hostname)}"
-
-
-# Constants for disk power estimation (Watts)
-
 : "${HDD_ACTIVE_W:=5.0}"
 : "${HDD_STANDBY_W:=0.5}"
 : "${SSD_ACTIVE_W:=2.5}"
 : "${SSD_IDLE_W:=0.3}"
 
-
 # --- SENSOR DISCOVERY ---
+declare -A SENSOR_PATHS SENSOR_NAMES SENSOR_TYPES SENSOR_MAX_ENERGY SENSOR_WATTS
 
-declare -A SENSOR_PATHS
-declare -A SENSOR_NAMES
-declare -A SENSOR_TYPES # "rapl" or "nvidia"
-declare -A SENSOR_MAX_ENERGY
-declare -A SENSOR_WATTS
-
-
-# 1. Discover RAPL sensors
-# Direct approach to avoid permission issues or find failures on certain kernels
-
-for p in /sys/class/powercap/intel-rapl*/energy_uj /sys/class/powercap/intel-rapl*/*/energy_uj; do
-  if [ -e "$p" ]; then
-    name_file="$(dirname "$p")/name"
-    if [ -f "$name_file" ]; then
-      raw_name=$(cat "$name_file" 2>/dev/null || echo "unknown")
-      
-      # Generate a unique ID based on the path to avoid collisions
-
-      path_id=$(basename "$(dirname "$p")" | tr -cd '[:alnum:]_')
-      id="rapl_${path_id}"
-      
-      SENSOR_PATHS[$id]="$p"
-      SENSOR_NAMES[$id]="$raw_name"
-      SENSOR_TYPES[$id]="rapl"
-      
-      max_file="$(dirname "$p")/max_energy_range_uj"
-      if [ -f "$max_file" ]; then
-        SENSOR_MAX_ENERGY[$id]=$(cat "$max_file" 2>/dev/null || echo 0)
-      fi
-    fi
-  fi
+for p in /sys/class/powercap/intel-rapl*/energy_uj \
+          /sys/class/powercap/intel-rapl*/*/energy_uj; do
+  [[ -e "$p" ]] || continue
+  name_file="$(dirname "$p")/name"
+  [[ -f "$name_file" ]] || continue
+  raw_name=$(cat "$name_file" 2>/dev/null || echo "unknown")
+  id="rapl_$(basename "$(dirname "$p")" | tr -cd '[:alnum:]_')"
+  SENSOR_PATHS[$id]="$p"
+  SENSOR_NAMES[$id]="$raw_name"
+  SENSOR_TYPES[$id]="rapl"
+  max_file="$(dirname "$p")/max_energy_range_uj"
+  [[ -f "$max_file" ]] && SENSOR_MAX_ENERGY[$id]=$(cat "$max_file" 2>/dev/null || echo 0)
 done
 
-
-
-
-# 2. Discover NVIDIA sensors
 if command -v nvidia-smi &>/dev/null; then
-  gpu_count=$(nvidia-smi --query-gpu=count --format=csv,noheader,nounits | head -n 1 || echo 0)
-  for ((i=0; i<gpu_count; i++)); do
-    gpu_name=$(nvidia-smi --query-gpu=name --format=csv,noheader,nounits --id=$i)
+  gpu_count=$(nvidia-smi --query-gpu=count --format=csv,noheader,nounits | head -n1 || echo 0)
+  for ((i = 0; i < gpu_count; i++)); do
     id="nvidia_gpu_$i"
-    SENSOR_PATHS[$id]="$i" # Use index as path
-    SENSOR_NAMES[$id]="$gpu_name"
+    SENSOR_PATHS[$id]="$i"
+    SENSOR_NAMES[$id]=$(nvidia-smi --query-gpu=name --format=csv,noheader,nounits --id=$i)
     SENSOR_TYPES[$id]="nvidia"
   done
 fi
 
-# 3. Discover Disks (Estimation)
 for d in /sys/block/sd* /sys/block/nvme*; do
   [[ -e "$d" ]] || continue
   name=$(basename "$d")
-  # Skip partitions
-  [[ "$name" == *p[0-9]* ]] && [[ "$name" == nvme* ]] && continue
-  [[ "$name" =~ [0-9]$ ]] && [[ "$name" == sd* ]] && continue
-  
+  [[ "$name" =~ nvme.*p[0-9]+$ ]] && continue
+  [[ "$name" =~ sd.*[0-9]$ ]] && continue
   id="disk_$name"
+  rot=$(cat "$d/queue/rotational" 2>/dev/null || echo 0)
   SENSOR_PATHS[$id]="$d"
   SENSOR_TYPES[$id]="disk"
-  rot=$(cat "$d/queue/rotational" 2>/dev/null || echo "0")
-  if [[ "$rot" == "1" ]]; then
-    SENSOR_NAMES[$id]="HDD $name"
-  else
-    SENSOR_NAMES[$id]="SSD $name"
-  fi
+  SENSOR_NAMES[$id]="$([[ "$rot" == 1 ]] && echo "HDD $name" || echo "SSD $name")"
 done
 
+[[ ${#SENSOR_PATHS[@]} -gt 0 ]] || { echo "ERROR: No energy sensors found." >&2; exit 1; }
 
-if [[ ${#SENSOR_PATHS[@]} -eq 0 ]]; then
-  echo "ERROR: No energy sensors found (Intel RAPL or NVIDIA)." >&2
-  exit 1
-fi
-
-
+# --- STATE FILES ---
 STATE_FILE="$STATE_DIR/state.env"
 TODAY_FILE="$STATE_DIR/today_$(date +%F).env"
 LAST_REPORT_FILE="$STATE_DIR/last_report_date"
 
 # --- UTILS ---
 
+j_to_kwh()  { awk -v j="$1"   'BEGIN { printf "%.4f", j / 3600000 }'; }
+calc_cost()  { awk -v k="$1" -v t="$TARIFF_EUR_KWH" 'BEGIN { printf "%.4f", k * t }'; }
+awk_sum()    { awk -v a="$1" -v b="$2" 'BEGIN { printf "%.6f", a + b }'; }
+awk_max()    { awk -v a="$1" -v b="$2" 'BEGIN { if (b > a) print b; else print a }'; }
+
+save_kv() {
+  local file="$1"; shift
+  printf '%s\n' "$@" > "$file"
+}
+
 get_friendly_name() {
-  local id="$1"
-  local raw="${SENSOR_NAMES[$id]:-}"
+  local id="$1" raw="${SENSOR_NAMES[$1]:-}"
   case "$raw" in
-    package*) echo "🔳 CPU" ;;
-    core*)    echo "🧠 Cores" ;;
-    uncore*)  echo "🎨 iGPU" ;;
-    dram*)    echo "📟 RAM" ;;
-    psys*)    echo "💻 System" ;;
-    *SSD*|*nvme*) echo "📀 $raw" ;;
-    *HDD*)        echo "💿 $raw" ;;
-    *)       
-      if [[ "$id" == nvidia* ]]; then
-        echo "🎨 GPU"
-      else
-        echo "${raw:-$id}"
-      fi
-      ;;
+    package*) echo "🔳 CPU"       ;;
+    core*)    echo "🧠 Cores"     ;;
+    uncore*)  echo "🎨 iGPU"      ;;
+    dram*)    echo "📟 RAM"       ;;
+    psys*)    echo "💻 System"    ;;
+    *SSD*|*nvme*) echo "📀 $raw"  ;;
+    *HDD*)        echo "💿 $raw"  ;;
+    *)  [[ "$id" == nvidia* ]] && echo "🎨 GPU" || echo "${raw:-$id}" ;;
   esac
 }
 
-
-
-
 send_telegram() {
-
-  local text="$1"
-  [[ "$TELEGRAM_ENABLED" == "1" ]] || return 0
-  [[ -n "$TELEGRAM_BOT_TOKEN" && -n "$TELEGRAM_CHAT_ID" ]] || return 0
+  [[ "$TELEGRAM_ENABLED" == 1 && -n "$TELEGRAM_BOT_TOKEN" && -n "$TELEGRAM_CHAT_ID" ]] || return 0
   curl -fsS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
     --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
-    --data-urlencode "text=${text}" \
-    --data-urlencode "parse_mode=Markdown" >/dev/null || true
+    --data-urlencode "text=$1" \
+    --data-urlencode "parse_mode=HTML" >/dev/null || true
 }
 
-save_kv() {
-  local file="$1"
-  shift
-  : > "$file"
-  for kv in "$@"; do
-    echo "$kv" >> "$file"
-  done
-}
+# --- STATE MANAGEMENT ---
 
 load_state() {
-  if [[ -f "$STATE_FILE" ]]; then
-    # shellcheck disable=SC1090
-    source "$STATE_FILE"
-  fi
-  
-  # Initialize missing sensors in state
+  [[ -f "$STATE_FILE" ]] && source "$STATE_FILE"  # shellcheck disable=SC1090
   local changed=0
   for id in "${!SENSOR_PATHS[@]}"; do
-    last_uj_var="LAST_UJ_$id"
-    last_ts_var="LAST_TS_$id"
-    if [[ -z "${!last_uj_var:-}" ]]; then
-      if [[ "${SENSOR_TYPES[$id]}" == "rapl" ]]; then
-        eval "$last_uj_var=$(cat "${SENSOR_PATHS[$id]}")"
-      elif [[ "${SENSOR_TYPES[$id]}" == "disk" ]]; then
-        # For disks, store last I/O sectors
-        eval "$last_uj_var=$(awk '{print $3+$7}' "${SENSOR_PATHS[$id]}/stat" 2>/dev/null || echo 0)"
-      else
-        eval "$last_uj_var=0"
-      fi
-      eval "$last_ts_var=$(date +%s)"
-      changed=1
-    fi
-
+    local v_uj="LAST_UJ_$id" v_ts="LAST_TS_$id"
+    [[ -n "${!v_uj:-}" ]] && continue
+    case "${SENSOR_TYPES[$id]}" in
+      rapl) printf -v "$v_uj" '%s' "$(cat "${SENSOR_PATHS[$id]}")" ;;
+      disk) printf -v "$v_uj" '%s' "$(awk '{print $3+$7}' "${SENSOR_PATHS[$id]}/stat" 2>/dev/null || echo 0)" ;;
+      *)    printf -v "$v_uj" '%s' "0" ;;
+    esac
+    printf -v "$v_ts" '%s' "$(date +%s)"
+    changed=1
   done
-  
   if [[ $changed -eq 1 ]]; then
     local kvs=()
     for id in "${!SENSOR_PATHS[@]}"; do
-      last_uj_var="LAST_UJ_$id"
-      last_ts_var="LAST_TS_$id"
-      kvs+=("$last_uj_var=${!last_uj_var}")
-      kvs+=("$last_ts_var=${!last_ts_var}")
+      local v_uj="LAST_UJ_$id" v_ts="LAST_TS_$id"
+      kvs+=("$v_uj=${!v_uj}" "$v_ts=${!v_ts}")
     done
     save_kv "$STATE_FILE" "${kvs[@]}"
   fi
 }
 
 ensure_today_file() {
-  local current_date
-  current_date="$(date +%F)"
-  TODAY_FILE="$STATE_DIR/today_${current_date}.env"
-  if [[ ! -f "$TODAY_FILE" ]]; then
-    local kvs=("DATE=$current_date")
-    for id in "${!SENSOR_PATHS[@]}"; do
-      kvs+=("J_$id=0")
-      kvs+=("PEAK_$id=0")
-    done
-    save_kv "$TODAY_FILE" "${kvs[@]}"
-  fi
+  TODAY_FILE="$STATE_DIR/today_$(date +%F).env"
+  [[ -f "$TODAY_FILE" ]] && return
+  local kvs=("DATE=$(date +%F)")
+  for id in "${!SENSOR_PATHS[@]}"; do kvs+=("J_$id=0" "PEAK_$id=0"); done
+  save_kv "$TODAY_FILE" "${kvs[@]}"
 }
 
 load_today() {
   ensure_today_file
-  # shellcheck disable=SC1090
-  source "$TODAY_FILE"
+  source "$TODAY_FILE"  # shellcheck disable=SC1090
 }
 
-calc_cost() {
-  local kwh="$1"
-  awk -v kwh="$kwh" -v tariff="$TARIFF_EUR_KWH" 'BEGIN { printf "%.4f", kwh * tariff }'
+# --- REPORTING ---
+# Shared logic: builds per-sensor lines and computes total.
+# psys is used as the sole total when present; otherwise package + nvidia + disks.
+
+_build_report_body() {
+  local source_file="$1"
+  source "$source_file"  # shellcheck disable=SC1090
+
+  local total_j=0 has_psys=0 lines="" section_cpu="" section_gpu="" section_ram="" section_sys="" section_disk=""
+  declare -A seen
+
+  # First pass: detect psys
+  for id in "${!SENSOR_PATHS[@]}"; do
+    [[ "${SENSOR_NAMES[$id]}" == psys* ]] && has_psys=1 && break
+  done
+
+  for id in "${!SENSOR_PATHS[@]}"; do
+    local raw="${SENSOR_NAMES[$id]:-}"
+    [[ -n "${seen[$raw]:-}" ]] && continue
+    seen[$raw]=1
+
+    j_val="J_$id"; peak_val="PEAK_$id"
+    local j="${!j_val:-0}" peak="${!peak_val:-0}"
+
+    if [[ $has_psys -eq 1 ]]; then
+      [[ "$raw" == psys* ]] && total_j="$j"
+    else
+      [[ "$raw" == package* || "$id" == nvidia* || "$raw" == SSD* || "$raw" == HDD* ]] \
+        && total_j=$(awk_sum "$total_j" "$j")
+    fi
+
+    local friendly kwh
+    friendly=$(get_friendly_name "$id")
+    kwh=$(j_to_kwh "$j")
+    local line="• ${friendly}: <code>${kwh}</code> kWh (Peak: <code>${peak}</code>W)\n"
+    case "$friendly" in
+      *CPU*|*Cores*) section_cpu+="$line" ;;
+      *GPU*)         section_gpu+="$line" ;;
+      *RAM*)         section_ram+="$line" ;;
+      *System*)      section_sys+="$line" ;;
+      *)             section_disk+="$line" ;;
+    esac
+  done
+
+  local total_kwh cost
+  total_kwh=$(j_to_kwh "$total_j")
+  cost=$(calc_cost "$total_kwh")
+
+  printf '%s' "${section_cpu}${section_gpu}${section_ram}${section_disk}${section_sys}"
+  printf '\n<b>💰 TOTAL:</b> <code>%s</code> kWh\n<b>💶 Cost:</b> <code>%s</code> %s' \
+    "$total_kwh" "$cost" "$CURRENCY"
+
+  # Export for callers
+  _REPORT_TOTAL_KWH="$total_kwh"
+  _REPORT_COST="$cost"
+}
+
+generate_report() {
+  local title="$1" label="$2" source_file="$3"
+  [[ -f "$source_file" ]] || return 0
+  local body
+  body=$(_build_report_body "$source_file")
+  local msg="<b>${title}</b>\n<b>Host:</b> <code>${HOST_LABEL}</code>\n<b>${label}</b>\n\n${body}"
+  send_telegram "$msg"
 }
 
 generate_status_report() {
-  local label="$1"
-  load_today
-  local msg
-  local total_j
-  msg="📊 *Status Update* (${label})%0AHost: ${HOST_LABEL}%0A"
-  total_j=0
-  
-  for id in "${!SENSOR_PATHS[@]}"; do
-    local j_var="J_$id"
-    local peak_var="PEAK_$id"
-    local j="${!j_var:-0}"
-    local peak="${!peak_var:-0}"
-    total_j=$(awk -v a="$total_j" -v b="$j" 'BEGIN { print a+b }')
-    
-    local friendly
-    local kwh
-    friendly=$(get_friendly_name "$id")
-    kwh=$(awk -v j="$j" 'BEGIN { printf "%.4f", j/3600000 }')
-    msg+="%0A*${friendly}*:%0A- Consumption: ${kwh} kWh%0A- Peak: ${peak} W"
-
-  done
-  
-  local total_kwh
-  local cost
-  total_kwh=$(awk -v j="$total_j" 'BEGIN { printf "%.4f", j/3600000 }')
-  cost=$(calc_cost "$total_kwh")
-  msg+="%0A%0A*TOTAL*: ${total_kwh} kWh%0A*Cost*: ${cost} ${CURRENCY}"
-
-
-  
-  send_telegram "$msg"
+  generate_report "📊 Status Update ($1)" "" "$TODAY_FILE"
 }
 
 generate_daily_report() {
-  local report_date="$1"
-  local report_file="$STATE_DIR/today_${report_date}.env"
-  [[ -f "$report_file" ]] || return 0
-  
-  # shellcheck disable=SC1090
-  source "$report_file"
-  
-  local msg
-  local total_j
-  msg="🔌 *Daily Energy Report*%0AHost: ${HOST_LABEL}%0ADate: ${report_date}%0A"
-  total_j=0
-  
-  for id in "${!SENSOR_PATHS[@]}"; do
-    local j_var="J_$id"
-    local peak_var="PEAK_$id"
-    local j="${!j_var:-0}"
-    local peak="${!peak_var:-0}"
-    total_j=$(awk -v a="$total_j" -v b="$j" 'BEGIN { print a+b }')
-    
-    local friendly
-    local kwh
-    friendly=$(get_friendly_name "$id")
-    kwh=$(awk -v j="$j" 'BEGIN { printf "%.4f", j/3600000 }')
-    msg+="%0A*${friendly}*:%0A- Consumption: ${kwh} kWh%0A- Peak: ${peak} W"
-
-
-  done
-  
-  local total_kwh
-  local cost
-  total_kwh=$(awk -v j="$total_j" 'BEGIN { printf "%.4f", j/3600000 }')
-  cost=$(calc_cost "$total_kwh")
-  msg+="%0A%0A*TOTAL*: ${total_kwh} kWh%0A*Estimated Cost*: ${cost} ${CURRENCY}"
-
-
-  
-  echo "[$(date '+%F %T')] REPORT ${report_date} kWh=${total_kwh} cost=${cost} ${CURRENCY}" >> "$LOG_FILE"
-  send_telegram "$msg"
-  echo "$report_date" > "$LAST_REPORT_FILE"
+  local date="$1" file="$STATE_DIR/today_${date}.env"
+  generate_report "📅 Daily Energy Report" "Date: <code>${date}</code>" "$file"
+  echo "[$(date '+%F %T')] REPORT ${date} kWh=${_REPORT_TOTAL_KWH} cost=${_REPORT_COST} ${CURRENCY}" >> "$LOG_FILE"
+  echo "$date" > "$LAST_REPORT_FILE"
 }
 
 maybe_send_scheduled_report() {
-  local now_h
-  local now_m
-  local today
-  local last_sent
-  now_h="$(date +%H)"
-  now_m="$(date +%M)"
-  today="$(date +%F)"
+  local now_h now_m today last_sent
+  now_h="$(date +%H)" now_m="$(date +%M)" today="$(date +%F)"
 
-  
-  # 1. Daily Report
-  last_sent=""
-  [[ -f "$LAST_REPORT_FILE" ]] && last_sent="$(cat "$LAST_REPORT_FILE")"
-  if [[ "$now_h" == "$(printf '%02d' "$REPORT_HOUR")" && "$now_m" == "$(printf '%02d' "$REPORT_MINUTE")" && "$last_sent" != "$today" ]]; then
+  last_sent=""; [[ -f "$LAST_REPORT_FILE" ]] && last_sent="$(cat "$LAST_REPORT_FILE")"
+  if [[ "$now_h" == "$(printf '%02d' "$REPORT_HOUR")" \
+     && "$now_m" == "$(printf '%02d' "$REPORT_MINUTE")" \
+     && "$last_sent" != "$today" ]]; then
     generate_daily_report "$today"
   fi
 
-  # 2. Intermediate Reports (Configurable)
-  if [[ "$TELEGRAM_REPORT_INTERVAL_HOURS" -gt 0 ]]; then
-    local last_int_file="$STATE_DIR/last_interval_report"
-    local last_int=""
-    [[ -f "$last_int_file" ]] && last_int="$(cat "$last_int_file")"
-    
-    if [[ "$now_m" == "00" ]]; then
-      if (( now_h % TELEGRAM_REPORT_INTERVAL_HOURS == 0 )); then
-        # Avoid sending partial report if it coincides with daily report hour
-        if [[ "$now_h" != "$(printf '%02d' "$REPORT_HOUR")" ]]; then
-          if [[ "$last_int" != "${today}_${now_h}" ]]; then
-            generate_status_report "${now_h}:00"
-            echo "${today}_${now_h}" > "$last_int_file"
-          fi
-        fi
-      fi
-    fi
+  [[ "$TELEGRAM_REPORT_INTERVAL_HOURS" -gt 0 && "$now_m" == "00" ]] || return 0
+  (( now_h % TELEGRAM_REPORT_INTERVAL_HOURS == 0 )) || return 0
+  [[ "$now_h" != "$(printf '%02d' "$REPORT_HOUR")" ]] || return 0
+  local int_file="$STATE_DIR/last_interval_report"
+  local last_int=""; [[ -f "$int_file" ]] && last_int="$(cat "$int_file")"
+  if [[ "$last_int" != "${today}_${now_h}" ]]; then
+    generate_status_report "${now_h}:00"
+    echo "${today}_${now_h}" > "$int_file"
   fi
-
-
 }
 
 rollover_if_new_day() {
-  local current_date
-  local today_date
-  current_date="$(date +%F)"
-
-  today_date="$(basename "$TODAY_FILE" | sed 's/^today_//; s/\.env$//')"
-  if [[ "$current_date" != "$today_date" ]]; then
-    generate_daily_report "$today_date"
-    ensure_today_file
+  local today="$(date +%F)"
+  local stored="$(basename "$TODAY_FILE" | sed 's/^today_//;s/\.env$//')"
+  if [[ "$today" != "$stored" ]]; then
+    generate_daily_report "$stored"
     load_today
   fi
 }
 
+# --- STARTUP ---
 load_state
 load_today
 
-send_telegram "🚀 *Server Power Monitor* started on ${HOST_LABEL}. Monitoring ${#SENSOR_PATHS[@]} sensors."
+[[ "${1:-}" == "--test-report" ]] && { generate_status_report "MANUAL-TEST"; exit 0; }
 
+send_telegram "🚀 <b>Server Power Monitor</b> started on ${HOST_LABEL}. Monitoring ${#SENSOR_PATHS[@]} sensors."
+
+# --- MAIN LOOP ---
+# ANSI colors
+C_GRAY=$'\e[90m' C_CYAN=$'\e[36m' C_GREEN=$'\e[32m' C_YELLOW=$'\e[33m' C_BOLD=$'\e[1m' C_RESET=$'\e[0m'
 
 while true; do
   sleep "$SAMPLE_INTERVAL"
   rollover_if_new_day
-  
-  current_ts=$(date +%s)
-  kvs_today=("DATE=$(date +%F)")
-  kvs_state=()
-  
-  total_watts=0
-  total_kwh=0
-  
+
+  local_ts=$(date +%s)
+  kvs_today=("DATE=$(date +%F)") kvs_state=()
+  total_watts=0 total_kwh=0
+
   for id in "${!SENSOR_PATHS[@]}"; do
-    last_uj_var="LAST_UJ_$id"
-    last_ts_var="LAST_TS_$id"
-    j_var="J_$id"
-    peak_var="PEAK_$id"
-    
-    last_uj="${!last_uj_var}"
-    last_ts="${!last_ts_var}"
-    current_j_total="${!j_var:-0}"
-    current_peak="${!peak_var:-0}"
-    
-    delta_s=$(( current_ts - last_ts ))
-    [[ $delta_s -le 0 ]] && delta_s=1
-    
-    delta_j=0
-    watts=0
-    current_uj=0
+    v_uj="LAST_UJ_$id"; v_ts="LAST_TS_$id"; v_j="J_$id"; v_peak="PEAK_$id"
+    last_uj="${!v_uj}" last_ts="${!v_ts}"
+    cur_j="${!v_j:-0}" cur_peak="${!v_peak:-0}"
 
-    
-    if [[ "${SENSOR_TYPES[$id]}" == "rapl" ]]; then
-      current_uj=$(cat "${SENSOR_PATHS[$id]}")
-      delta_uj=$(( current_uj - last_uj ))
-      
-      if (( delta_uj < 0 )); then
-        max_uj="${SENSOR_MAX_ENERGY[$id]:-0}"
-        if (( max_uj > 0 )); then
-          delta_uj=$(( (max_uj - last_uj) + current_uj ))
-        else
-          delta_uj=0
-        fi
-      fi
-      delta_j=$(awk -v uj="$delta_uj" 'BEGIN { printf "%.6f", uj/1000000 }')
-      watts=$(awk -v j="$delta_j" -v s="$delta_s" 'BEGIN { printf "%.2f", j/s }')
-    elif [[ "${SENSOR_TYPES[$id]}" == "nvidia" ]]; then
-      # NVIDIA
-      watts=$(nvidia-smi --query-gpu=power.draw --format=csv,noheader,nounits --id="${SENSOR_PATHS[$id]}" || echo 0)
-      delta_j=$(awk -v w="$watts" -v s="$delta_s" 'BEGIN { printf "%.6f", w*s }')
-      current_uj=0
-    elif [[ "${SENSOR_TYPES[$id]}" == "disk" ]]; then
-      # DISK Estimation
-      is_rot=$(cat "${SENSOR_PATHS[$id]}/queue/rotational" 2>/dev/null || echo 0)
-      if [[ "$is_rot" == "1" ]] && command -v hdparm &>/dev/null; then
-        # HDD: Check spin status
-        status=$(hdparm -C "/dev/${id#disk_}" 2>/dev/null || echo "unknown")
-        if [[ "$status" == *"standby"* ]]; then
-          watts="$HDD_STANDBY_W"
-        else
-          watts="$HDD_ACTIVE_W"
-        fi
-      else
-        # SSD: Check activity
-        current_io=$(awk '{print $3+$7}' "${SENSOR_PATHS[$id]}/stat" 2>/dev/null || echo 0)
-        delta_io=$(( current_io - last_uj ))
-        if [[ $delta_io -gt 0 ]]; then
-          watts="$SSD_ACTIVE_W"
-        else
-          watts="$SSD_IDLE_W"
-        fi
-        current_uj="$current_io" # Re-use current_uj to store IO
-      fi
-      delta_j=$(awk -v w="$watts" -v s="$delta_s" 'BEGIN { printf "%.6f", w*s }')
-    fi
+    delta_s=$(( local_ts - last_ts )); (( delta_s > 0 )) || delta_s=1
+    delta_j=0 watts=0 cur_uj=0
 
-    
-    # Update totals
-    new_j_total=$(awk -v a="$current_j_total" -v b="$delta_j" 'BEGIN { printf "%.6f", a+b }')
-    new_peak=$(awk -v p="$current_peak" -v w="$watts" 'BEGIN { if(w>p) print w; else print p }')
-    
-    kvs_today+=("J_$id=$new_j_total")
-    kvs_today+=("PEAK_$id=$new_peak")
-    kvs_state+=("LAST_UJ_$id=$current_uj")
-    kvs_state+=("LAST_TS_$id=$current_ts")
-    
-    # Update local vars for current loop
-    eval "$j_var=$new_j_total"
-    eval "$peak_var=$new_peak"
-    eval "$last_uj_var=$current_uj"
-    eval "$last_ts_var=$current_ts"
-    
+    case "${SENSOR_TYPES[$id]}" in
+      rapl)
+        cur_uj=$(cat "${SENSOR_PATHS[$id]}")
+        delta_uj=$(( cur_uj - last_uj ))
+        if (( delta_uj < 0 )); then
+          max_uj="${SENSOR_MAX_ENERGY[$id]:-0}"
+          (( max_uj > 0 )) && delta_uj=$(( max_uj - last_uj + cur_uj )) || delta_uj=0
+        fi
+        delta_j=$(awk -v u="$delta_uj" 'BEGIN { printf "%.6f", u/1e6 }')
+        watts=$(awk -v j="$delta_j" -v s="$delta_s" 'BEGIN { printf "%.2f", j/s }')
+        ;;
+      nvidia)
+        watts=$(nvidia-smi --query-gpu=power.draw --format=csv,noheader,nounits \
+                  --id="${SENSOR_PATHS[$id]}" || echo 0)
+        delta_j=$(awk -v w="$watts" -v s="$delta_s" 'BEGIN { printf "%.6f", w*s }')
+        ;;
+      disk)
+        dev="/dev/${id#disk_}"
+        is_rot=$(cat "${SENSOR_PATHS[$id]}/queue/rotational" 2>/dev/null || echo 0)
+        if [[ "$is_rot" == 1 ]] && command -v hdparm &>/dev/null; then
+          status=$(hdparm -C "$dev" 2>/dev/null || echo "unknown")
+          [[ "$status" == *standby* ]] && watts="$HDD_STANDBY_W" || watts="$HDD_ACTIVE_W"
+        else
+          cur_uj=$(awk '{print $3+$7}' "${SENSOR_PATHS[$id]}/stat" 2>/dev/null || echo 0)
+          delta_io=$(( cur_uj - last_uj ))
+          (( delta_io > 0 )) && watts="$SSD_ACTIVE_W" || watts="$SSD_IDLE_W"
+        fi
+        delta_j=$(awk -v w="$watts" -v s="$delta_s" 'BEGIN { printf "%.6f", w*s }')
+        ;;
+    esac
+
+    new_j=$(awk_sum "$cur_j" "$delta_j")
+    new_peak=$(awk_max "$cur_peak" "$watts")
+
+    kvs_today+=("J_$id=$new_j" "PEAK_$id=$new_peak")
+    kvs_state+=("$v_uj=$cur_uj" "$v_ts=$local_ts")
+
+    printf -v "$v_j"    '%s' "$new_j"
+    printf -v "$v_peak" '%s' "$new_peak"
+    printf -v "$v_uj"   '%s' "$cur_uj"
+    printf -v "$v_ts"   '%s' "$local_ts"
+
     SENSOR_WATTS[$id]="$watts"
-    
-    total_watts=$(awk -v a="$total_watts" -v b="$watts" 'BEGIN { print a+b }')
-    total_kwh=$(awk -v a="$total_kwh" -v b="$new_j_total" 'BEGIN { printf "%.4f", a + (b/3600000) }')
+    total_watts=$(awk_sum "$total_watts" "$watts")
+    total_kwh=$(awk -v a="$total_kwh" -v b="$new_j" 'BEGIN { printf "%.4f", a + b/3600000 }')
   done
 
-  
   save_kv "$TODAY_FILE" "${kvs_today[@]}"
   save_kv "$STATE_FILE" "${kvs_state[@]}"
-  
-  # Colori ANSI
-  C_GRAY="\e[90m"
-  C_CYAN="\e[36m"
-  C_GREEN="\e[32m"
-  C_YELLOW="\e[33m"
-  C_BOLD="\e[1m"
-  C_RESET="\e[0m"
 
-  # Power Status
+  # Terminal output
   power_icon="🔌"
-  if [[ -f "/sys/class/power_supply/ADP1/online" ]]; then
-    [[ $(cat /sys/class/power_supply/ADP1/online) == "0" ]] && power_icon="🔋"
-  fi
-  
-  bat_level=""
-  if [[ -f "/sys/class/power_supply/BAT1/capacity" ]]; then
-    bat_level="($(cat /sys/class/power_supply/BAT1/capacity)%%)"
-  fi
+  [[ -f /sys/class/power_supply/ADP1/online ]] \
+    && [[ $(cat /sys/class/power_supply/ADP1/online) == 0 ]] && power_icon="🔋"
 
-  # Terminal output preparation
+  bat_level=""
+  [[ -f /sys/class/power_supply/BAT1/capacity ]] \
+    && bat_level="($(cat /sys/class/power_supply/BAT1/capacity)%)"
+
   cost=$(calc_cost "$total_kwh")
-  
-  # Build status line (main sensors only to avoid clutter)
   status_line=""
   declare -A seen_names=()
 
-  
-  # Determine if we have a "package" sensor (Total CPU)
   has_package=0
   for sid in "${!SENSOR_NAMES[@]}"; do
     [[ "${SENSOR_NAMES[$sid]}" == package* ]] && has_package=1 && break
   done
 
   for id in "${!SENSOR_PATHS[@]}"; do
-    raw_n="${SENSOR_NAMES[$id]}"
-    
-    # Skip "core" if "package" is present for clarity
-    [[ "$raw_n" == core* && $has_package -eq 1 ]] && continue
-    # Skip if we already added a sensor with this exact name
-    [[ -n "${seen_names[$raw_n]:-}" ]] && continue
-    # Skip system duplicates if present
-    [[ "$raw_n" == psys* && "$status_line" == *"System"* ]] && continue
-
-    seen_names[$raw_n]=1
+    raw="${SENSOR_NAMES[$id]}"
+    [[ "$raw" == core* && $has_package -eq 1 ]] && continue
+    [[ -n "${seen_names[$raw]:-}" ]] && continue
+    seen_names[$raw]=1
     friendly=$(get_friendly_name "$id")
-
-
-    color=$C_CYAN
-    [[ "${SENSOR_TYPES[$id]}" == "nvidia" ]] && color=$C_GREEN
+    color=$([[ "${SENSOR_TYPES[$id]}" == nvidia ]] && echo "$C_GREEN" || echo "$C_CYAN")
     status_line+="${friendly}: ${color}$(printf "%.1f" "${SENSOR_WATTS[$id]}")W${C_RESET} | "
   done
 
-  # Handle output: use \r only for TTY, \n for logs/Docker
+  line_args=("$C_GRAY" "$(date '+%H:%M')" "$C_RESET" "$power_icon" "$bat_level" \
+             "$status_line" "$C_BOLD" "$C_RESET" "$C_YELLOW" "$total_watts" "$C_RESET" \
+             "$total_kwh" "$C_GREEN" "$cost" "$C_RESET" "$CURRENCY")
+  fmt='%s[%s]%s %s%s | %b%sTOT:%s%s%5.1fW%s | %7.4fkWh | %s%7.4f%s%s'
   if [[ -t 1 ]]; then
-    printf "\r${C_GRAY}[%s]${C_RESET} ${power_icon}${bat_level} | %b${C_BOLD}TOT:${C_RESET}${C_YELLOW}%5.1fW${C_RESET} | %7.4fkWh | ${C_GREEN}%7.4f%s${C_RESET}  " \
-      "$(date '+%H:%M')" "$status_line" "$total_watts" "$total_kwh" "$cost" "$CURRENCY"
+    printf "\r${fmt}  " "${line_args[@]}"
   else
-    printf "${C_GRAY}[%s]${C_RESET} ${power_icon}${bat_level} | %b${C_BOLD}TOT:${C_RESET}${C_YELLOW}%5.1fW${C_RESET} | %7.4fkWh | ${C_GREEN}%7.4f%s${C_RESET}\n" \
-      "$(date '+%H:%M')" "$status_line" "$total_watts" "$total_kwh" "$cost" "$CURRENCY"
+    printf "${fmt}\n"   "${line_args[@]}"
   fi
 
-
-
-
-
-  
   maybe_send_scheduled_report
 done
-
-
