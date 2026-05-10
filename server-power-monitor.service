@@ -1,0 +1,14 @@
+[Unit]
+Description=Server Power Monitor (Intel RAPL)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/server-power-monitor.sh
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target

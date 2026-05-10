@@ -1,0 +1,17 @@
+# Local state and configuration
+state/
+server-power-monitor.conf
+server-power-monitor.log
+
+# Temporary files
+*.tmp
+*.swp
+*~
+
+# OS generated files
+.DS_Store
+.directory
+
+# IDEs
+.vscode/
+.idea/

@@ -1,0 +1,28 @@
+# Server Power Monitor Configuration
+# Copy this file to /etc/server-power-monitor.conf or keep it here as server-power-monitor.conf
+
+# Sampling interval in seconds
+SAMPLE_INTERVAL=5
+
+# Electricity tariff and currency
+TARIFF_EUR_KWH=0.30
+CURRENCY="EUR"
+
+# Label to identify the machine in reports
+HOST_LABEL="$(hostname)"
+
+# Daily report schedule (24h)
+REPORT_HOUR=23
+REPORT_MINUTE=55
+
+
+# Telegram Integration
+TELEGRAM_ENABLED=0
+TELEGRAM_BOT_TOKEN=""
+TELEGRAM_CHAT_ID=""
+
+# Intermediate report interval (in hours)
+# Example: 1 = every hour, 6 = every 6 hours, 0 = disabled
+TELEGRAM_REPORT_INTERVAL_HOURS=6
+
+

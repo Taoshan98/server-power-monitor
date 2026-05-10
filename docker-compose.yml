@@ -1,0 +1,19 @@
+services:
+  power-monitor:
+    build: .
+    container_name: server-power-monitor
+    privileged: true
+    network_mode: host
+    volumes:
+      - /sys:/sys:ro
+      - /dev:/dev:ro
+      - ./state:/app/state
+      - ./server-power-monitor.conf:/etc/server-power-monitor.conf:ro
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [ gpu, utility ]
