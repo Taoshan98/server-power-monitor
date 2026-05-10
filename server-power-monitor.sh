@@ -32,6 +32,7 @@ LOG_FILE=$(_resolve_path LOG_FILE "" "$(
 )")
 
 mkdir -p "$STATE_DIR"
+# shellcheck disable=SC1090
 [[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
 
 # --- DEFAULTS ---
@@ -133,7 +134,8 @@ send_telegram() {
 # --- STATE MANAGEMENT ---
 
 load_state() {
-  [[ -f "$STATE_FILE" ]] && source "$STATE_FILE"  # shellcheck disable=SC1090
+  # shellcheck disable=SC1090
+  [[ -f "$STATE_FILE" ]] && source "$STATE_FILE"
   local changed=0
   for id in "${!SENSOR_PATHS[@]}"; do
     local v_uj="LAST_UJ_$id" v_ts="LAST_TS_$id"
@@ -166,7 +168,8 @@ ensure_today_file() {
 
 load_today() {
   ensure_today_file
-  source "$TODAY_FILE"  # shellcheck disable=SC1090
+  # shellcheck disable=SC1090
+  source "$TODAY_FILE"
 }
 
 # --- REPORTING ---
@@ -175,7 +178,8 @@ load_today() {
 
 _build_report_body() {
   local source_file="$1"
-  source "$source_file"  # shellcheck disable=SC1090
+  # shellcheck disable=SC1090
+  source "$source_file"
 
   local total_j=0 has_psys=0 lines="" section_cpu="" section_gpu="" section_ram="" section_sys="" section_disk=""
   declare -A seen
