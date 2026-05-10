@@ -161,7 +161,8 @@ load_state() {
 ensure_today_file() {
   TODAY_FILE="$STATE_DIR/today_$(date +%F).env"
   [[ -f "$TODAY_FILE" ]] && return
-  local kvs=("DATE=$(date +%F)")
+  local kvs
+  kvs=("DATE=$(date +%F)")
   for id in "${!SENSOR_PATHS[@]}"; do kvs+=("J_$id=0" "PEAK_$id=0"); done
   save_kv "$TODAY_FILE" "${kvs[@]}"
 }
@@ -181,7 +182,7 @@ _build_report_body() {
   # shellcheck disable=SC1090
   source "$source_file"
 
-  local total_j=0 has_psys=0 lines="" section_cpu="" section_gpu="" section_ram="" section_sys="" section_disk=""
+  local total_j=0 has_psys=0 section_cpu="" section_gpu="" section_ram="" section_sys="" section_disk=""
   declare -A seen
 
   # First pass: detect psys
@@ -244,7 +245,8 @@ generate_status_report() {
 }
 
 generate_daily_report() {
-  local date="$1" file="$STATE_DIR/today_${date}.env"
+  local date="$1"
+  local file="$STATE_DIR/today_${date}.env"
   generate_report "📅 Daily Energy Report" "Date: <code>${date}</code>" "$file"
   echo "[$(date '+%F %T')] REPORT ${date} kWh=${_REPORT_TOTAL_KWH} cost=${_REPORT_COST} ${CURRENCY}" >> "$LOG_FILE"
   echo "$date" > "$LAST_REPORT_FILE"
@@ -273,8 +275,9 @@ maybe_send_scheduled_report() {
 }
 
 rollover_if_new_day() {
-  local today="$(date +%F)"
-  local stored="$(basename "$TODAY_FILE" | sed 's/^today_//;s/\.env$//')"
+  local today stored
+  today="$(date +%F)"
+  stored="$(basename "$TODAY_FILE" | sed 's/^today_//;s/\.env$//')"
   if [[ "$today" != "$stored" ]]; then
     generate_daily_report "$stored"
     load_today
@@ -390,11 +393,10 @@ while true; do
   line_args=("$C_GRAY" "$(date '+%H:%M')" "$C_RESET" "$power_icon" "$bat_level" \
              "$status_line" "$C_BOLD" "$C_RESET" "$C_YELLOW" "$total_watts" "$C_RESET" \
              "$total_kwh" "$C_GREEN" "$cost" "$C_RESET" "$CURRENCY")
-  fmt='%s[%s]%s %s%s | %b%sTOT:%s%s%5.1fW%s | %7.4fkWh | %s%7.4f%s%s'
   if [[ -t 1 ]]; then
-    printf "\r${fmt}  " "${line_args[@]}"
+    printf "\r%s[%s]%s %s%s | %b%sTOT:%s%s%5.1fW%s | %7.4fkWh | %s%7.4f%s%s  " "${line_args[@]}"
   else
-    printf "${fmt}\n"   "${line_args[@]}"
+    printf "%s[%s]%s %s%s | %b%sTOT:%s%s%5.1fW%s | %7.4fkWh | %s%7.4f%s%s\n" "${line_args[@]}"
   fi
 
   maybe_send_scheduled_report
