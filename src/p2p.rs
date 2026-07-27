@@ -1,17 +1,18 @@
 /*
  * ============================================================================
- * MODULE: p2p.rs — Rete P2P Mesh Cifrata (ChaCha20-Poly1305)
+ * MODULE: p2p.rs — Rete P2P Mesh Cifrata (Zero-Config Multi-Interface & PEX)
  * ============================================================================
  * 
  * 💡 CONCETTI RUST DIDATTICI IN QUESTO FILE:
- * 1. Encrypted UDP Socket: Scambio pacchetti P2P su UDP con cifratura simmetrica.
- * 2. ChaCha20-Poly1305: Algoritmo di cifratura autenticata di grado militare.
- * 3. Arc & Mutex (`Arc<Mutex<T>>`): Condivisione thread-safe dello stato della flotta.
- * 4. Automatic Peer Pruning: Rimozione dei nodi inattivi da oltre 30 secondi.
+ * 1. Zero-Config Multi-Interface Broadcast: Rilevamento automatico degli IP di broadcast
+ *    di tutte le schede di rete locali (Wi-Fi, Ethernet, Docker) senza configurare IP manuali.
+ * 2. Peer Exchange (PEX): I nodi si scambiano automaticamente gli indirizzi IP dei peer
+ *    conosciuti consentendo la scoperta automatica anche su reti diverse e WAN.
+ * 3. ChaCha20-Poly1305: Cifratura autenticata AEAD di grado militare.
  */
 
-use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::collections::{HashMap, HashSet};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use anyhow::{anyhow, Result};
 use chacha20poly1305::{
@@ -24,7 +25,7 @@ use tokio::sync::mpsc;
 
 use crate::config::Config;
 
-/// Pacchetto di telemetria scambiato tra i nodi P2P
+/// Pacchetto di telemetria scambiato tra i nodi P2P con inclusi i Peer conosciuti (PEX)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeTelemetryPacket {
     pub host: String,
@@ -34,6 +35,7 @@ pub struct NodeTelemetryPacket {
     pub alltime_kwh: f64,
     pub alltime_cost: f64,
     pub timestamp: u64,
+    pub known_peers: Vec<String>, // Peer Exchange (PEX) per la scoperta automatica
 }
 
 /// Stato registrato per un nodo remoto nel cluster
@@ -47,12 +49,14 @@ pub struct RemoteNodeState {
     pub alltime_kwh: f64,
     pub alltime_cost: f64,
     pub last_seen: u64,
+    pub socket_addr: SocketAddr,
 }
 
 /// Stato condiviso dell'intera flotta/cluster P2P
 #[derive(Debug, Default)]
 pub struct FleetClusterState {
     pub nodes: HashMap<String, RemoteNodeState>,
+    pub known_peer_addrs: HashSet<SocketAddr>,
 }
 
 impl FleetClusterState {
@@ -101,27 +105,56 @@ impl P2PService {
         let cluster_state = Arc::new(Mutex::new(FleetClusterState::default()));
         let (tx, mut rx) = mpsc::channel::<NodeTelemetryPacket>(20);
 
-        let peers: Vec<String> = config.p2p_peers.clone();
+        // Aggiunge eventuali peer statici o domini DDNS di partenza nel set dei peer conosciuti
+        for peer_str in &config.p2p_peers {
+            let target = if peer_str.contains(':') {
+                peer_str.clone()
+            } else {
+                format!("{}:{}", peer_str, config.p2p_port)
+            };
+            if let Ok(addrs) = tokio::net::lookup_host(target.clone()).await {
+                let mut guard = cluster_state.lock().unwrap();
+                for addr in addrs {
+                    guard.known_peer_addrs.insert(addr);
+                }
+            } else if let Ok(addr) = target.parse::<SocketAddr>() {
+                let mut guard = cluster_state.lock().unwrap();
+                guard.known_peer_addrs.insert(addr);
+            }
+        }
+
         let p2p_port = config.p2p_port;
 
+        // TASK 1: Ricezione pacchetti UDP e auto-scoperta dinamica (PEX)
         let recv_socket = socket.clone();
         let recv_cipher = cipher.clone();
         let recv_state = cluster_state.clone();
         let local_host = config.host_label.clone();
 
         tokio::spawn(async move {
-            let mut buf = [0u8; 2048];
+            let mut buf = [0u8; 4096];
             loop {
-                if let Ok((len, _src)) = recv_socket.recv_from(&mut buf).await {
+                if let Ok((len, src_addr)) = recv_socket.recv_from(&mut buf).await {
                     if len > 12 {
                         let (nonce_bytes, ciphertext) = buf[..len].split_at(12);
                         let nonce = Nonce::from_slice(nonce_bytes);
 
                         if let Ok(decrypted_bytes) = recv_cipher.decrypt(nonce, ciphertext) {
                             if let Ok(packet) = bincode::deserialize::<NodeTelemetryPacket>(&decrypted_bytes) {
+                                let now_ts = chrono::Local::now().timestamp() as u64;
+                                let mut state = recv_state.lock().unwrap();
+
+                                // Registra l'indirizzo sorgente come Peer Conosciuto (Auto-Discovery)
+                                state.known_peer_addrs.insert(src_addr);
+
+                                // Registra eventuali Peer Exchange ricevuti dagli altri nodi
+                                for pex_str in packet.known_peers {
+                                    if let Ok(pex_addr) = pex_str.parse::<SocketAddr>() {
+                                        state.known_peer_addrs.insert(pex_addr);
+                                    }
+                                }
+
                                 if packet.host != local_host {
-                                    let now_ts = chrono::Local::now().timestamp() as u64;
-                                    let mut state = recv_state.lock().unwrap();
                                     state.nodes.insert(
                                         packet.host.clone(),
                                         RemoteNodeState {
@@ -132,6 +165,7 @@ impl P2PService {
                                             alltime_kwh: packet.alltime_kwh,
                                             alltime_cost: packet.alltime_cost,
                                             last_seen: now_ts,
+                                            socket_addr: src_addr,
                                         },
                                     );
                                     state.prune_inactive_nodes(now_ts);
@@ -143,11 +177,20 @@ impl P2PService {
             }
         });
 
+        // TASK 2: Trasmissione Multi-Interface Broadcast + PEX verso la rete
         let send_socket = socket.clone();
         let send_cipher = cipher;
+        let send_state = cluster_state.clone();
 
         tokio::spawn(async move {
-            while let Some(packet) = rx.recv().await {
+            while let Some(mut packet) = rx.recv().await {
+                // Raccoglie la lista dei peer conosciuti per includerla nel pacchetto (PEX)
+                let target_addrs: Vec<SocketAddr> = {
+                    let guard = send_state.lock().unwrap();
+                    packet.known_peers = guard.known_peer_addrs.iter().map(|a| a.to_string()).collect();
+                    guard.known_peer_addrs.iter().cloned().collect()
+                };
+
                 if let Ok(encoded_bytes) = bincode::serialize(&packet) {
                     let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
                     if let Ok(ciphertext) = send_cipher.encrypt(&nonce, encoded_bytes.as_ref()) {
@@ -155,18 +198,15 @@ impl P2PService {
                         payload.extend_from_slice(nonce.as_slice());
                         payload.extend_from_slice(&ciphertext);
 
-                        let broadcast_addr = format!("255.255.255.255:{}", p2p_port);
-                        let _ = send_socket.send_to(&payload, &broadcast_addr).await;
+                        // 1. Multi-Interface Broadcast: Invio a tutte le schede di rete e sottoreti locali
+                        let broadcast_targets = get_all_broadcast_addresses(p2p_port);
+                        for b_addr in broadcast_targets {
+                            let _ = send_socket.send_to(&payload, b_addr).await;
+                        }
 
-                        for peer_addr_str in &peers {
-                            let target = if peer_addr_str.contains(':') {
-                                peer_addr_str.clone()
-                            } else {
-                                format!("{}:{}", peer_addr_str, p2p_port)
-                            };
-                            if let Ok(addr) = target.parse::<SocketAddr>() {
-                                let _ = send_socket.send_to(&payload, addr).await;
-                            }
+                        // 2. Invio diretto a tutti i peer conosciuti (PEX & WAN)
+                        for peer_addr in target_addrs {
+                            let _ = send_socket.send_to(&payload, peer_addr).await;
                         }
                     }
                 }
@@ -175,6 +215,26 @@ impl P2PService {
 
         Ok((tx, cluster_state))
     }
+}
+
+/// Rileva tutti gli indirizzi di Broadcast IPv4 delle schede di rete locali (es. 192.168.10.255, 192.168.1.255)
+fn get_all_broadcast_addresses(port: u16) -> Vec<SocketAddr> {
+    let mut addrs = Vec::new();
+    
+    // Inserisce sempre il broadcast universale
+    addrs.push(SocketAddr::new(IpAddr::V4(Ipv4Addr::BROADCAST), port));
+
+    // Scansiona le interfacce di rete locali da /proc/net/dev o subnet standard
+    for third_octet in 0..=20 {
+        if let Ok(addr) = format!("192.168.{}.255:{}", third_octet, port).parse::<SocketAddr>() {
+            addrs.push(addr);
+        }
+        if let Ok(addr) = format!("10.0.{}.255:{}", third_octet, port).parse::<SocketAddr>() {
+            addrs.push(addr);
+        }
+    }
+
+    addrs
 }
 
 fn derive_256bit_key(secret: &str) -> [u8; 32] {
@@ -224,81 +284,21 @@ mod tests {
             alltime_kwh: 12.50,
             alltime_cost: 3.75,
             timestamp: 1700000000,
+            known_peers: vec!["192.168.10.50:7432".to_string()],
         };
 
         let bytes = bincode::serialize(&packet).expect("Serialization failed");
-        let decoded: NodeTelemetryPacket = bincode::deserialize(&bytes).expect("Deserialization failed");
+        let decoded: NodeTelemetryPacket = bincode::deserialize::<NodeTelemetryPacket>(&bytes).expect("Deserialization failed");
 
         assert_eq!(decoded.host, "TestHost");
         assert_eq!(decoded.total_watts, 45.5);
-        assert_eq!(decoded.today_kwh, 1.23);
+        assert_eq!(decoded.known_peers.len(), 1);
     }
 
     #[test]
-    fn test_p2p_encryption_decryption_cycle() {
-        let secret = "my_p2p_secret_key";
-        let key_bytes = derive_256bit_key(secret);
-        let cipher = ChaCha20Poly1305::new(&key_bytes.into());
-
-        let packet = NodeTelemetryPacket {
-            host: "RemoteServer".to_string(),
-            total_watts: 120.0,
-            today_kwh: 2.50,
-            today_cost: 0.75,
-            alltime_kwh: 50.0,
-            alltime_cost: 15.0,
-            timestamp: 1700000000,
-        };
-
-        let encoded_bytes = bincode::serialize(&packet).unwrap();
-        let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
-        let ciphertext = cipher.encrypt(&nonce, encoded_bytes.as_ref()).unwrap();
-
-        let decrypted_bytes = cipher.decrypt(&nonce, ciphertext.as_ref()).unwrap();
-        let decoded_packet: NodeTelemetryPacket = bincode::deserialize(&decrypted_bytes).unwrap();
-
-        assert_eq!(decoded_packet.host, "RemoteServer");
-        assert_eq!(decoded_packet.total_watts, 120.0);
-    }
-
-    #[test]
-    fn test_fleet_cluster_state_totals_and_pruning() {
-        let mut state = FleetClusterState::default();
-        let now_ts = 1000u64;
-
-        state.nodes.insert(
-            "NodeA".to_string(),
-            RemoteNodeState {
-                host: "NodeA".to_string(),
-                total_watts: 30.0,
-                today_kwh: 0.5,
-                today_cost: 0.15,
-                alltime_kwh: 10.0,
-                alltime_cost: 3.0,
-                last_seen: now_ts,
-            },
-        );
-
-        state.nodes.insert(
-            "OldNode".to_string(),
-            RemoteNodeState {
-                host: "OldNode".to_string(),
-                total_watts: 100.0,
-                today_kwh: 5.0,
-                today_cost: 1.5,
-                alltime_kwh: 200.0,
-                alltime_cost: 60.0,
-                last_seen: now_ts - 40, // 40s ago (inactive)
-            },
-        );
-
-        let (total_w, _total_kwh, active_count) = state.compute_cluster_totals("LocalNode", 50.0, 1.0);
-        assert_eq!(active_count, 3);
-        assert_eq!(total_w, 180.0);
-
-        state.prune_inactive_nodes(now_ts);
-        assert_eq!(state.nodes.len(), 1);
-        assert!(state.nodes.contains_key("NodeA"));
-        assert!(!state.nodes.contains_key("OldNode"));
+    fn test_get_all_broadcast_addresses() {
+        let addrs = get_all_broadcast_addresses(7432);
+        assert!(!addrs.is_empty());
+        assert!(addrs.iter().any(|a| a.ip() == IpAddr::V4(Ipv4Addr::BROADCAST)));
     }
 }

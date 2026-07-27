@@ -218,6 +218,7 @@ async fn main() -> anyhow::Result<()> {
                         alltime_kwh: summary.total_kwh,
                         alltime_cost: summary.total_cost,
                         timestamp: now_ts,
+                        known_peers: Vec::new(),
                     };
                     let _ = tx.send(p2p_packet).await;
                 }
