@@ -3,70 +3,54 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Rust](https://img.shields.io/badge/Language-Rust_2021-orange.svg)](https://www.rust-lang.org/)
 [![Tokio](https://img.shields.io/badge/Async-Tokio-blue.svg)](https://tokio.rs/)
+[![MQTT](https://img.shields.io/badge/Integration-Home--Assistant-41BDF5.svg)](https://www.home-assistant.io/)
+[![P2P](https://img.shields.io/badge/Cluster-P2P_Mesh-purple.svg)](https://github.com/taoshan98/server-power-monitor)
 [![Docker](https://img.shields.io/badge/Docker-Multi--stage-2496ED.svg)](https://www.docker.com/)
-[![Platform](https://img.shields.io/badge/Platform-Linux-lightgrey.svg)](https://www.linux.org/)
 
-Un sistema di telemetria e monitoraggio in tempo reale del consumo energetico per server Linux, riscritto interamente in **Rust** per garantire massima efficienza, zero overhead di runtime e reportistica Telegram dal layout moderno ed elegante.
+Un sistema di telemetria e monitoraggio in tempo reale del consumo energetico per server Linux, riscritto interamente in **Rust** per garantire massima efficienza, rete **P2P Mesh Cifrata**, integrazione nativa **MQTT Home Assistant Auto-Discovery** e reportistica Telegram.
 
 ---
 
-## 📱 Anteprima Output Telegram
+## 🌐 Rete P2P Mesh Cifrata & Home Assistant
 
-I report inviati su Telegram sono in formato **HTML** a schede, con icone intuitive ed un **Contatore Storico Absolute (Lifetime)** che non perde mai un solo Watt o Centesimo dalla prima installazione:
-
-```html
-📅 REPORT ENERGETICO GIORNALIERO
-━━━━━━━━━━━━━━━━━━━━━━
-🖥️ Host: server-home
-📆 Data: 2026-07-27
-
-📦 Dettaglio Consumi:
-• 🔳 CPU Package: 0.1420 kWh (Picco: 65.2W)
-• 🧠 Cores: 0.0910 kWh (Picco: 42.1W)
-• 🎨 GPU NVIDIA RTX 3080: 0.4500 kWh (Picco: 210.0W)
-• 📀 SSD nvme0n1: 0.0150 kWh (Picco: 2.5W)
-
-💰 RIEPILOGO OGGI:
-├ ⚡ Consumo Totale: 0.6070 kWh
-└ 💶 Costo Stimato: 0.1821 EUR
-
-🏛️ CONTATORE STORICO ABSOLUTE (LIFETIME):
-├ 🗓️ Primo Giorno: 2026-05-10 (78 giorni)
-├ 📊 Totale Software: 45.3890 kWh (13.6167 EUR)
-└ 📉 Media Giornaliera: 0.5819 kWh/g (0.1745 EUR/g)
+```text
+ 💻 PC Ufficio (Fuori casa) ───[ Mesh P2P su Internet ]───┐
+                                                          │
+ 💻 Laptop in viaggio        ───[ Mesh P2P su Internet ]───┼──> 🖥️ Server Casa (Nodo P2P + MQTT Bridge) ──> 🏠 Home Assistant
+                                                          │
+ 💻 PC Casa (Locale)         ───[ Mesh P2P Locale ]───────┘
 ```
 
----
-
-## ✨ Caratteristiche Principali
-
-- **🏛️ Contatore Storico Indistruttibile (Lifetime Counter)**: Registra e preserva il consumo cumulativo (kWh ed EUR) di tutta la vita del software tramite il file `lifetime_base.env`. Anche se la retention policy pulisce i vecchi log giornalieri, il totale storico assoluto **non perde mai un singolo Watt**.
-- **📊 Terminal Dashboard TUI Live (Stile 3)**: Interfaccia a schermo intero con grafico Sparkline dell'andamento dei Watt, barrette di carico per ciascun componente e doppio contatore in basso (Consumo Oggi vs Contatore Storico Lifetime).
-- **🚨 Alert Telegram per Picchi di Potenza**: Notifica immediata su Telegram se il consumo in Watt del server supera la soglia impostata (`MAX_POWER_ALERT_WATTS`).
-- **🧹 Retention Policy Automatica**: Pulizia automatica configurabile dei file di log giornalieri più vecchi di N giorni (`RETENTION_DAYS`), con accorpamento automatico nel contatore storico permanente.
-- **📄 Export Automatico in CSV**: Salva automaticamente un report giornaliero in `history.csv` per facilitare analisi esterne e grafici su Excel.
+- **🌐 Rete P2P Mesh Cifrata (ChaCha20-Poly1305)**: Collega $N$ server locali e remoti in una rete P2P privata. Ciascun nodo conosce in tempo reale i consumi di tutta la flotta.
+- **🏠 Home Assistant Auto-Discovery**: Pubblica automaticamente i sensori di potenza ed energia (Watt, kWh oggi, kWh Lifetime, CPU, GPU, SSD) su Home Assistant via MQTT senza bisogno di configurazioni manuali YAML.
 
 ---
 
-## 🚀 Guida Rapida
+## 📱 Dashboard Terminale TUI (Stile 3) con Riepilogo Flotta
 
-### 1. Compilazione ed Esecuzione Locale (Cargo)
+L'interfaccia a schermo intero mostra sia i dettagli del nodo locale sia il consumo aggregato di tutti i nodi del cluster P2P:
 
-Requisiti: Rust toolchain ([rustup.rs](https://rustup.rs/)).
+```text
+ 🔌 SERVER POWER MONITOR  •  Host: NTM-PC  [🔌 (96%)] [22:08:00]
+ ────────────────────────────────────────────────────────────────────────────
+ COMPONENTE             POTENZA   CARICO VISIVO             QUOTA
+  🔳 CPU Package          16.6 W   [████████░░░░░░░░]        31.2%
+  💻 System                5.6 W   [██░░░░░░░░░░░░░░]        10.5%
+  🎨 GPU (NVIDIA)          7.1 W   [███░░░░░░░░░░░░░]        13.3%
+  📀 SSD nvme0n1           0.3 W   [█░░░░░░░░░░░░░░░]         0.5%
+  📀 SSD nvme1n1           2.5 W   [█░░░░░░░░░░░░░░░]         4.7%
 
-```bash
-# Compilazione ed avvio immediato in modalità release (consigliato con sudo per i registri RAPL)
-cargo build --release
-sudo ./target/release/server-power-monitor
+ 🌐 CLUSTER MESH (3 Nodi Attivi)
+  ├ 🖥️ NTM-PC (Locale)   :    54.1 W │  0.0012 kWh
+  ├ 🖥️ Server-NAS (P2P)   :    28.0 W │  0.1420 kWh (Lifetime: 12.4000 kWh)
+  └ 🖥️ Rig-AI (P2P)       :   210.0 W │  1.2400 kWh (Lifetime: 98.2000 kWh)
+  ⚡ POTENZA CLUSTER TOTALE: 292.1 W (Oggi: 1.3832 kWh)
 
-# Invio di un report di test su Telegram
-cargo run --release -- --test-report
-```
-
-### 2. Installazione Nativa come Servizio Systemd
-
-```bash
-bash setup_service.sh
+ 📈 ANDAMENTO POTENZA LOCALE (Ultimi 35 campionamenti)
+  60.0W ┤ ▂▃▅█▇▆▅▄▃▂ ▂▃▄▅▆▇█  (Attuale: 54.1W)
+ ────────────────────────────────────────────────────────────────────────────
+  ⚡ POTENZA:   54.1 W  │  📊 OGGI: 0.0012 kWh (0.0004 EUR)
+  🏛️  STORICO LIFETIME: 16.3890 kWh (4.9167 EUR)
 ```
 
 ---
@@ -78,13 +62,32 @@ bash setup_service.sh
 | `SAMPLE_INTERVAL` | Intervallo in secondi tra i campionamenti | `5` |
 | `TARIFF_EUR_KWH` | Costo dell'energia elettrica per kWh | `0.30` |
 | `CURRENCY` | Simbolo della valuta nei report | `EUR` |
-| `TELEGRAM_ENABLED` | Abilita (1) o disabilita (0) l'integrazione Telegram | `0` |
-| `TELEGRAM_BOT_TOKEN` | Token segreto del Bot Telegram | `""` |
-| `TELEGRAM_CHAT_ID` | ID della Chat/Gruppo Telegram | `""` |
-| `MAX_POWER_ALERT_WATTS` | Soglia di potenza in Watt per alert Telegram immediati (0 = disattivato) | `0` |
-| `RETENTION_DAYS` | Giorni di mantenimento dei log giornalieri (0 = conserva per sempre) | `365` |
-| `CSV_EXPORT_ENABLED` | Abilita (1) o disabilita (0) l'export in `history.csv` | `1` |
-| `HOST_LABEL` | Nome identificativo del server nei report | `hostname` |
+| `TELEGRAM_ENABLED` | Abilita (1) o disabilita (0) Telegram | `0` |
+| `MQTT_ENABLED` | Abilita (1) o disabilita (0) MQTT per Home Assistant | `0` |
+| `MQTT_HOST` | Hostname/IP del broker MQTT (es. Home Assistant) | `localhost` |
+| `MQTT_PORT` | Porta del broker MQTT | `1883` |
+| `P2P_ENABLED` | Abilita (1) o disabilita (0) la Rete P2P Mesh | `0` |
+| `CLUSTER_SECRET` | Chiave segreta condivisa per cifrare la rete P2P | `""` |
+| `P2P_PORT` | Porta UDP per la comunicazione P2P | `7432` |
+| `P2P_PEERS` | Lista IP statici/WAN di nodi remoti (separati da spazio o virgola) | `""` |
+| `RETENTION_DAYS` | Giorni di mantenimento log giornalieri (0 = conserva per sempre) | `365` |
+
+---
+
+## 🚀 Guida Rapida
+
+### Esecuzione Nativa
+
+```bash
+cargo build --release
+sudo ./target/release/server-power-monitor
+```
+
+### Docker Compose
+
+```bash
+docker-compose up -d --build
+```
 
 ---
 

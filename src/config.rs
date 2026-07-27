@@ -4,9 +4,9 @@
  * ============================================================================
  * 
  * 💡 CONCETTI RUST DIDATTICI IN QUESTO FILE:
- * 1. Struct: Struttura dati per raggruppare tutti i parametri del monitor.
- * 2. Ownership & PathBuf: `PathBuf` è il tipo posseduto per i percorsi dei file.
- * 3. Feature Flags & Configs: Gestione di soglie alert, retention e export CSV.
+ * 1. Struct: Struttura dati per raggruppare tutti i parametri di configurazione.
+ * 2. Feature Flags: Abilitazione MQTT, P2P Cluster Mesh, Telegram, Retention.
+ * 3. String Parsing: Split e parsing di indirizzi di peer P2P e configurazioni.
  */
 
 use std::env;
@@ -32,10 +32,24 @@ pub struct Config {
     pub ssd_active_w: f64,
     pub ssd_idle_w: f64,
 
-    // Nuovi parametri di retention, alert ed export
+    // Parametri di retention, alert ed export
     pub retention_days: u32,
     pub max_power_alert_watts: f64,
     pub csv_export_enabled: bool,
+
+    // Parametri MQTT (Home Assistant)
+    pub mqtt_enabled: bool,
+    pub mqtt_host: String,
+    pub mqtt_port: u16,
+    pub mqtt_username: String,
+    pub mqtt_password: String,
+    pub mqtt_topic_prefix: String,
+
+    // Parametri P2P Cluster Mesh
+    pub p2p_enabled: bool,
+    pub cluster_secret: String,
+    pub p2p_port: u16,
+    pub p2p_peers: Vec<String>,
 
     // Percorsi di sistema
     pub config_file: PathBuf,
@@ -67,6 +81,18 @@ impl Default for Config {
             retention_days: 365,
             max_power_alert_watts: 0.0,
             csv_export_enabled: true,
+
+            mqtt_enabled: false,
+            mqtt_host: "localhost".to_string(),
+            mqtt_port: 1883,
+            mqtt_username: String::new(),
+            mqtt_password: String::new(),
+            mqtt_topic_prefix: "server-power-monitor".to_string(),
+
+            p2p_enabled: false,
+            cluster_secret: String::new(),
+            p2p_port: 7432,
+            p2p_peers: Vec::new(),
 
             config_file: PathBuf::from("server-power-monitor.conf"),
             state_dir: PathBuf::from("./state"),
@@ -216,6 +242,31 @@ impl Config {
                     "CSV_EXPORT_ENABLED" => {
                         self.csv_export_enabled = val == "1" || val.eq_ignore_ascii_case("true");
                     }
+                    "MQTT_ENABLED" => {
+                        self.mqtt_enabled = val == "1" || val.eq_ignore_ascii_case("true");
+                    }
+                    "MQTT_HOST" => self.mqtt_host = val.to_string(),
+                    "MQTT_PORT" => {
+                        if let Ok(v) = val.parse::<u16>() { self.mqtt_port = v; }
+                    }
+                    "MQTT_USERNAME" => self.mqtt_username = val.to_string(),
+                    "MQTT_PASSWORD" => self.mqtt_password = val.to_string(),
+                    "MQTT_TOPIC_PREFIX" => self.mqtt_topic_prefix = val.to_string(),
+
+                    "P2P_ENABLED" => {
+                        self.p2p_enabled = val == "1" || val.eq_ignore_ascii_case("true");
+                    }
+                    "CLUSTER_SECRET" => self.cluster_secret = val.to_string(),
+                    "P2P_PORT" => {
+                        if let Ok(v) = val.parse::<u16>() { self.p2p_port = v; }
+                    }
+                    "P2P_PEERS" => {
+                        self.p2p_peers = val
+                            .split(&[',', ' '][..])
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect();
+                    }
                     _ => {}
                 }
             }
@@ -268,6 +319,40 @@ impl Config {
         if let Ok(val) = env::var("CSV_EXPORT_ENABLED") {
             self.csv_export_enabled = val == "1" || val.eq_ignore_ascii_case("true");
         }
+        if let Ok(val) = env::var("MQTT_ENABLED") {
+            self.mqtt_enabled = val == "1" || val.eq_ignore_ascii_case("true");
+        }
+        if let Ok(val) = env::var("MQTT_HOST") {
+            self.mqtt_host = val;
+        }
+        if let Ok(val) = env::var("MQTT_PORT") {
+            if let Ok(v) = val.parse() { self.mqtt_port = v; }
+        }
+        if let Ok(val) = env::var("MQTT_USERNAME") {
+            self.mqtt_username = val;
+        }
+        if let Ok(val) = env::var("MQTT_PASSWORD") {
+            self.mqtt_password = val;
+        }
+        if let Ok(val) = env::var("MQTT_TOPIC_PREFIX") {
+            self.mqtt_topic_prefix = val;
+        }
+        if let Ok(val) = env::var("P2P_ENABLED") {
+            self.p2p_enabled = val == "1" || val.eq_ignore_ascii_case("true");
+        }
+        if let Ok(val) = env::var("CLUSTER_SECRET") {
+            self.cluster_secret = val;
+        }
+        if let Ok(val) = env::var("P2P_PORT") {
+            if let Ok(v) = val.parse() { self.p2p_port = v; }
+        }
+        if let Ok(val) = env::var("P2P_PEERS") {
+            self.p2p_peers = val
+                .split(&[',', ' '][..])
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+        }
     }
 }
 
@@ -279,4 +364,59 @@ fn get_hostname() -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn test_config_default() {
+        let config = Config::default();
+        assert_eq!(config.sample_interval, 5);
+        assert_eq!(config.currency, "EUR");
+        assert!(!config.telegram_enabled);
+        assert_eq!(config.retention_days, 365);
+        assert!(config.csv_export_enabled);
+    }
+
+    #[test]
+    fn test_parse_conf_file() {
+        let mut config = Config::default();
+        let temp_dir = std::env::temp_dir();
+        let temp_file = temp_dir.join("test_server_power_monitor.conf");
+
+        {
+            let mut file = File::create(&temp_file).unwrap();
+            writeln!(file, "# Comment line").unwrap();
+            writeln!(file, "SAMPLE_INTERVAL=10").unwrap();
+            writeln!(file, "TARIFF_EUR_KWH=0.25").unwrap();
+            writeln!(file, "CURRENCY=\"USD\"").unwrap();
+            writeln!(file, "TELEGRAM_ENABLED=1").unwrap();
+            writeln!(file, "P2P_PEERS=\"192.168.1.50 10.0.0.2:7432\"").unwrap();
+        }
+
+        config.parse_conf_file(&temp_file);
+        let _ = std::fs::remove_file(temp_file);
+
+        assert_eq!(config.sample_interval, 10);
+        assert_eq!(config.tariff_eur_kwh, 0.25);
+        assert_eq!(config.currency, "USD");
+        assert!(config.telegram_enabled);
+        assert_eq!(config.p2p_peers.len(), 2);
+        assert_eq!(config.p2p_peers[0], "192.168.1.50");
+        assert_eq!(config.p2p_peers[1], "10.0.0.2:7432");
+    }
+
+    #[test]
+    fn test_hostname_resolution() {
+        let mut config = Config::default();
+        config.host_label = "$(hostname)".to_string();
+        if config.host_label == "$(hostname)" {
+            config.host_label = get_hostname().unwrap_or_else(|| "localhost".to_string());
+        }
+        assert_ne!(config.host_label, "$(hostname)");
+        assert!(!config.host_label.is_empty());
+    }
 }

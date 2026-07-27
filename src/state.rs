@@ -387,3 +387,55 @@ pub fn get_last_interval_report(state_dir: &Path) -> Option<String> {
 pub fn save_last_interval_report(state_dir: &Path, key: &str) {
     let _ = fs::write(state_dir.join("last_interval_report"), key);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_daily_state_add_sample() {
+        let mut daily = DailyState {
+            date_str: "2026-07-27".to_string(),
+            joules: HashMap::new(),
+            peak_watts: HashMap::new(),
+        };
+
+        daily.add_sample("sensor_cpu", 100.0, 20.0);
+        daily.add_sample("sensor_cpu", 150.0, 35.0);
+        daily.add_sample("sensor_cpu", 50.0, 15.0);
+
+        assert_eq!(daily.joules.get("sensor_cpu").copied(), Some(300.0));
+        assert_eq!(daily.peak_watts.get("sensor_cpu").copied(), Some(35.0));
+    }
+
+    #[test]
+    fn test_calculate_total_joules_psys() {
+        let mut daily = DailyState::default();
+        daily.joules.insert("rapl_psys_0".to_string(), 3600.0);
+        daily.joules.insert("rapl_package_0".to_string(), 1800.0);
+
+        let sensors = vec![
+            SensorInfo {
+                id: "rapl_psys_0".to_string(),
+                raw_name: "psys".to_string(),
+                friendly_name: "💻 System".to_string(),
+                sensor_type: crate::sensors::SensorType::Rapl,
+                path: PathBuf::from("/"),
+                max_energy_range_uj: 0,
+            },
+            SensorInfo {
+                id: "rapl_package_0".to_string(),
+                raw_name: "package-0".to_string(),
+                friendly_name: "🔳 CPU Package".to_string(),
+                sensor_type: crate::sensors::SensorType::Rapl,
+                path: PathBuf::from("/"),
+                max_energy_range_uj: 0,
+            },
+        ];
+
+        let (total_j, has_psys) = calculate_total_joules(&daily, &sensors);
+        assert!(has_psys);
+        assert_eq!(total_j, 3600.0);
+    }
+}

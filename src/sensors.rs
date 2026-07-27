@@ -398,3 +398,30 @@ pub fn get_power_status() -> (String, String) {
 
     (icon.to_string(), battery_pct)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_compute_friendly_name() {
+        assert_eq!(SensorInfo::compute_friendly_name("rapl_package_0", "package-0"), "🔳 CPU Package");
+        assert_eq!(SensorInfo::compute_friendly_name("rapl_core_0", "core-0"), "🧠 Cores");
+        assert_eq!(SensorInfo::compute_friendly_name("rapl_uncore_0", "uncore-0"), "🎨 iGPU");
+        assert_eq!(SensorInfo::compute_friendly_name("rapl_dram_0", "dram-0"), "📟 RAM");
+        assert_eq!(SensorInfo::compute_friendly_name("rapl_psys_0", "psys-0"), "💻 System");
+        assert_eq!(SensorInfo::compute_friendly_name("nvidia_gpu_0", "NVIDIA RTX 3080"), "🎨 GPU");
+        assert_eq!(SensorInfo::compute_friendly_name("disk_nvme0n1", "SSD nvme0n1"), "📀 SSD nvme0n1");
+        assert_eq!(SensorInfo::compute_friendly_name("disk_sda", "HDD sda"), "💿 HDD sda");
+    }
+
+    #[test]
+    fn test_is_partition_name() {
+        assert!(is_partition_name("nvme0n1p1"));
+        assert!(is_partition_name("sda1"));
+        assert!(is_partition_name("sdb2"));
+        assert!(!is_partition_name("nvme0n1"));
+        assert!(!is_partition_name("sda"));
+        assert!(!is_partition_name("sdb"));
+    }
+}

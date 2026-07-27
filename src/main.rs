@@ -1,21 +1,22 @@
 /*
  * ============================================================================
- * SERVER POWER MONITOR (RUST EDITION) — STILE 3: FULLSCREEN TUI LIVE DASHBOARD
+ * SERVER POWER MONITOR (RUST EDITION) — MAIN APPLICATION ENTRY POINT
  * ============================================================================
- *
+ * 
  * 💡 CONCETTI RUST DIDATTICI IN QUESTO FILE PRINCIPALE (`main.rs`):
- * 1. Fullscreen TUI Live Dashboard: Interfaccia a schermo intero ridisegnata sul posto.
- * 2. Lifetime Software Counter: Visualizzazione live del totale cumulativo (kWh & EUR).
- * 3. Power Peak Alerts & Retention Policy: Monitoraggio delle soglie ed elaborazione automatica.
- * 4. Graceful Shutdown & Signal Handling (`tokio::select!`): Ripristino cursore su Ctrl+C.
+ * 1. Modular Architecture: Separazione in moduli puliti (`config`, `sensors`, `state`, `telegram`, `mqtt`, `p2p`, `tui`).
+ * 2. Tokio Async Runtime: Gestione asincrona non bloccante di I/O, segnali e rete.
+ * 3. Graceful Shutdown & Signal Handling (`tokio::select!`): Ripristino del cursore alla chiusura con Ctrl+C.
  */
 
 mod config;
+mod mqtt;
+mod p2p;
 mod sensors;
 mod state;
 mod telegram;
+mod tui;
 
-use std::collections::VecDeque;
 use std::env;
 use std::fs;
 use std::io::Write;
@@ -23,30 +24,11 @@ use std::time::Duration;
 
 use chrono::{Local, Timelike};
 use config::Config;
+use mqtt::{MqttService, MqttStatePayload};
+use p2p::{NodeTelemetryPacket, P2PService};
 use state::{DailyState, LastState};
 use telegram::TelegramClient;
-
-/// Struttura per conservare lo storico delle letture per il grafico Sparkline
-pub struct PowerHistory {
-    pub samples: VecDeque<f64>,
-    pub max_samples: usize,
-}
-
-impl PowerHistory {
-    pub fn new(max_samples: usize) -> Self {
-        Self {
-            samples: VecDeque::with_capacity(max_samples),
-            max_samples,
-        }
-    }
-
-    pub fn push(&mut self, val: f64) {
-        if self.samples.len() >= self.max_samples {
-            self.samples.pop_front();
-        }
-        self.samples.push_back(val);
-    }
-}
+use tui::PowerHistory;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -67,10 +49,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     if let Err(e) = fs::create_dir_all(&config.state_dir) {
-        eprintln!(
-            "⚠️ Impossibile creare la directory di stato {:?}: {}",
-            config.state_dir, e
-        );
+        eprintln!("⚠️ Impossibile creare la directory di stato {:?}: {}", config.state_dir, e);
     }
 
     // 3. Scoperta automatica dei sensori
@@ -82,7 +61,7 @@ async fn main() -> anyhow::Result<()> {
 
     let rapl_ok = sensors::check_rapl_permissions(&sensors);
 
-    // Esegue retention policy all'avvio
+    // Esegue la retention policy all'avvio
     state::apply_retention_policy(&config.state_dir, config.retention_days, &sensors);
 
     // 4. Inizializzazione dello stato e dello storico
@@ -92,8 +71,32 @@ async fn main() -> anyhow::Result<()> {
     let mut power_history = PowerHistory::new(35);
     let mut last_alert_ts: u64 = 0;
 
-    // 5. Inizializzazione Client Telegram
+    // 5. Inizializzazione dei Client Telegram, MQTT e P2P
     let telegram = TelegramClient::new(&config);
+
+    let mqtt_tx = if config.mqtt_enabled {
+        match MqttService::start(&config) {
+            Ok(tx) => Some(tx),
+            Err(e) => {
+                eprintln!("⚠️ Avviso: Impossibile avviare il servizio MQTT: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let (p2p_tx, cluster_state) = if config.p2p_enabled {
+        match P2PService::start(&config).await {
+            Ok((tx, state)) => (Some(tx), Some(state)),
+            Err(e) => {
+                eprintln!("⚠️ Avviso: Impossibile avviare il nodo P2P Cluster Mesh: {}", e);
+                (None, None)
+            }
+        }
+    } else {
+        (None, None)
+    };
 
     if is_test_report {
         println!("🧪 Modalità Test: Invio report di test su Telegram...");
@@ -104,11 +107,9 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let _ = telegram
-        .send_startup(&config.host_label, sensors.len())
-        .await;
+    let _ = telegram.send_startup(&config.host_label, sensors.len()).await;
 
-    // Pulisce lo schermo e nasconde il cursore
+    // Pulisce lo schermo e nasconde il cursore per il Live TUI
     print!("\x1b[2J\x1b[H\x1b[?25l");
     let _ = std::io::stdout().flush();
 
@@ -133,7 +134,6 @@ async fn main() -> anyhow::Result<()> {
                     let day_cost = day_kwh * config.tariff_eur_kwh;
                     let max_peak = daily_state.peak_watts.values().cloned().fold(0.0, f64::max);
 
-                    // Export CSV
                     if config.csv_export_enabled {
                         state::export_daily_to_csv(
                             &config.csv_file,
@@ -150,7 +150,6 @@ async fn main() -> anyhow::Result<()> {
                         .send_daily_report(&current_date, &daily_state, &sensors, &config)
                         .await;
 
-                    // Applica la retention policy
                     state::apply_retention_policy(&config.state_dir, config.retention_days, &sensors);
 
                     current_date = now_date.clone();
@@ -159,6 +158,7 @@ async fn main() -> anyhow::Result<()> {
 
                 // Misurazione sensori
                 let mut sensor_watts: Vec<(String, f64, String)> = Vec::new();
+                let mut sensor_map_for_mqtt = std::collections::HashMap::new();
                 let mut total_watts = 0.0;
 
                 for sensor in &sensors {
@@ -173,6 +173,7 @@ async fn main() -> anyhow::Result<()> {
                     last_state.last_ts.insert(sensor.id.clone(), now_ts);
 
                     sensor_watts.push((sensor.friendly_name.clone(), meas.watts, sensor.raw_name.clone()));
+                    sensor_map_for_mqtt.insert(sensor.id.clone(), meas.watts);
                     total_watts += meas.watts;
                 }
 
@@ -181,7 +182,6 @@ async fn main() -> anyhow::Result<()> {
                 daily_state.save(&config.state_dir);
                 last_state.save(&config.state_dir);
 
-                // Calcola sia il totale di Oggi che il Contatore Storico di Tutta la Storia del Software!
                 let (today_j, _) = state::calculate_total_joules(&daily_state, &sensors);
                 let today_kwh = today_j / 3_600_000.0;
                 let today_cost = today_kwh * config.tariff_eur_kwh;
@@ -193,7 +193,36 @@ async fn main() -> anyhow::Result<()> {
                     Some(&daily_state),
                 );
 
-                // Controllo Alert Potenza Max (cooldown 15 min = 900s)
+                // Pubblicazione MQTT (Home Assistant)
+                if let Some(ref tx) = mqtt_tx {
+                    let mqtt_payload = MqttStatePayload {
+                        host: config.host_label.clone(),
+                        total_watts,
+                        today_kwh,
+                        today_cost,
+                        alltime_kwh: summary.total_kwh,
+                        alltime_cost: summary.total_cost,
+                        currency: config.currency.clone(),
+                        sensors: sensor_map_for_mqtt,
+                    };
+                    let _ = tx.send(mqtt_payload).await;
+                }
+
+                // Pubblicazione P2P Cluster Mesh
+                if let Some(ref tx) = p2p_tx {
+                    let p2p_packet = NodeTelemetryPacket {
+                        host: config.host_label.clone(),
+                        total_watts,
+                        today_kwh,
+                        today_cost,
+                        alltime_kwh: summary.total_kwh,
+                        alltime_cost: summary.total_cost,
+                        timestamp: now_ts,
+                    };
+                    let _ = tx.send(p2p_packet).await;
+                }
+
+                // Controllo Alert Potenza Max
                 if config.max_power_alert_watts > 0.0 && total_watts >= config.max_power_alert_watts {
                     if now_ts.saturating_sub(last_alert_ts) > 900 {
                         let _ = telegram.send_power_alert(&config.host_label, total_watts, config.max_power_alert_watts).await;
@@ -201,8 +230,8 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
 
-                // Rendering TUI Live Dashboard con Contatore Storico
-                render_tui_style_3(
+                // Rendering TUI Live Dashboard con Contatore Storico e Cluster Mesh
+                tui::render_tui_style_3(
                     &now,
                     &config.host_label,
                     &sensor_watts,
@@ -214,6 +243,7 @@ async fn main() -> anyhow::Result<()> {
                     &config.currency,
                     &power_history,
                     rapl_ok,
+                    cluster_state.as_ref(),
                 );
 
                 maybe_send_scheduled_report(&now, &daily_state, &sensors, &config, &telegram).await;
@@ -222,176 +252,6 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
-}
-
-/// Rendering dello STILE 3: Fullscreen TUI Live Dashboard con Contatore Storico Software
-fn render_tui_style_3(
-    now: &chrono::DateTime<Local>,
-    host_label: &str,
-    sensor_watts: &[(String, f64, String)],
-    total_watts: f64,
-    today_kwh: f64,
-    today_cost: f64,
-    alltime_kwh: f64,
-    alltime_cost: f64,
-    currency: &str,
-    history: &PowerHistory,
-    rapl_ok: bool,
-) {
-    let (power_icon, bat_level) = sensors::get_power_status();
-
-    let c_reset = "\x1b[0m";
-    let c_bold = "\x1b[1m";
-    let c_gray = "\x1b[90m";
-    let c_cyan = "\x1b[36m";
-    let c_green = "\x1b[32m";
-    let c_yellow = "\x1b[33m";
-    let c_red = "\x1b[31m";
-    let c_magenta = "\x1b[35m";
-
-    let time_str = now.format("%H:%M:%S").to_string();
-    let bat_str = if bat_level.is_empty() {
-        power_icon
-    } else {
-        format!("{} {}", power_icon, bat_level)
-    };
-
-    let mut buf = String::new();
-
-    buf.push_str("\x1b[H");
-
-    // HEADER
-    buf.push_str(&format!(
-        "{}{} 🔌 SERVER POWER MONITOR{}  •  {}Host:{} {}{:<15}{} {}  [{}]\n",
-        c_bold, c_cyan, c_reset, c_bold, c_reset, c_yellow, host_label, c_reset, bat_str, time_str
-    ));
-    buf.push_str(&format!("{}\n", format!("{}\u{2500}", c_gray).repeat(76)));
-
-    if !rapl_ok {
-        buf.push_str(&format!(
-            "{}{}⚠️ PERMESSI SYSFS RIFIUTATI: Esegui con 'sudo' per sbloccare i dati CPU!{}\n",
-            c_bold, c_red, c_reset
-        ));
-    }
-
-    // TABELLA COMPONENTI CON BARRA VISIVA
-    buf.push_str(&format!(
-        "{}{:<22} {:>10}   {:<24} {:>6}{}\n",
-        c_gray, "COMPONENTE", "POTENZA", "CARICO VISIVO", "QUOTA", c_reset
-    ));
-
-    let has_package = sensor_watts
-        .iter()
-        .any(|(_, _, raw)| raw.starts_with("package"));
-    let mut seen_names = std::collections::HashSet::new();
-
-    for (friendly, w, raw) in sensor_watts {
-        if raw.starts_with("core") && has_package {
-            continue;
-        }
-        if seen_names.contains(raw) {
-            continue;
-        }
-        seen_names.insert(raw.clone());
-
-        let pct = if total_watts > 0.0 {
-            (*w / total_watts) * 100.0
-        } else {
-            0.0
-        };
-
-        let bar_len = 16;
-        let filled = ((pct / 100.0) * (bar_len as f64)).round() as usize;
-        let filled = filled.min(bar_len);
-        let empty = bar_len.saturating_sub(filled);
-
-        let color = if friendly.contains("GPU") {
-            c_green
-        } else if friendly.contains("CPU") || friendly.contains("System") {
-            c_cyan
-        } else {
-            c_magenta
-        };
-
-        let bar_str = format!(
-            "{}{}{}{}{}",
-            color,
-            "█".repeat(filled),
-            c_gray,
-            "░".repeat(empty),
-            c_reset
-        );
-
-        buf.push_str(&format!(
-            "  {:<20} {}{:>7.1} W{}   [{}] {:>5.1}%\n",
-            friendly, color, w, c_reset, bar_str, pct
-        ));
-    }
-
-    buf.push_str("\n");
-
-    // GRAFICO SPARKLINE
-    buf.push_str(&format!(
-        "{}{}📈 ANDAMENTO POTENZA (Ultimi 35 campionamenti){}\n",
-        c_bold, c_yellow, c_reset
-    ));
-
-    let sparkline = generate_sparkline(&history.samples);
-    let peak_in_history = history.samples.iter().cloned().fold(0.0, f64::max);
-
-    buf.push_str(&format!(
-        "  {:>5.1}W ┤ {}{}{}  (Attuale: {}{:.1}W{})\n",
-        peak_in_history, c_yellow, sparkline, c_reset, c_bold, total_watts, c_reset
-    ));
-
-    buf.push_str(&format!("{}\n", format!("{}\u{2500}", c_gray).repeat(76)));
-
-    // FOOTER RIEPILOGO: CONTATORE OGGI + CONTATORE STORICO LIFETIME
-    buf.push_str(&format!(
-        "  {}⚡ POTENZA: {}{:>6.1} W{}  │  {}📊 OGGI: {}{:.4} kWh{} ({:.4} {})\n",
-        c_bold,
-        c_yellow,
-        total_watts,
-        c_reset,
-        c_bold,
-        c_green,
-        today_kwh,
-        c_reset,
-        today_cost,
-        currency
-    ));
-
-    buf.push_str(&format!(
-        "  {}🏛️  STORICO LIFETIME: {}{:.4} kWh{} ({:.4} {})\n",
-        c_bold, c_cyan, alltime_kwh, c_reset, alltime_cost, currency
-    ));
-
-    buf.push_str("\x1b[J");
-
-    print!("{}", buf);
-    let _ = std::io::stdout().flush();
-}
-
-fn generate_sparkline(samples: &VecDeque<f64>) -> String {
-    if samples.is_empty() {
-        return " ".repeat(35);
-    }
-
-    let ticks = [' ', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-    let min_val = 0.0;
-    let max_val = samples.iter().cloned().fold(10.0, f64::max);
-    let range = (max_val - min_val).max(0.001);
-
-    let mut spark = String::new();
-    for &val in samples {
-        let normalized = (val - min_val) / range;
-        let idx = (normalized * (ticks.len() - 1) as f64).round() as usize;
-        let idx = idx.min(ticks.len() - 1);
-        spark.push(ticks[idx]);
-    }
-
-    let padding = 35usize.saturating_sub(spark.chars().count());
-    format!("{}{}", spark, " ".repeat(padding))
 }
 
 async fn maybe_send_scheduled_report(

@@ -3,10 +3,15 @@ name = "server-power-monitor"
 version = "0.2.0"
 edition = "2021"
 authors = ["Taoshan"]
-description = "Real-time server power & telemetry monitoring tool written in Rust with Telegram integration"
+description = "Real-time server power & telemetry monitoring tool written in Rust with Telegram, MQTT and Encrypted P2P Cluster Mesh"
 
 [dependencies]
 tokio = { version = "1.38", features = ["full"] }
 reqwest = { version = "0.12", features = ["json"] }
 chrono = { version = "0.4" }
 anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+rumqttc = "0.24"
+chacha20poly1305 = "0.10"
+bincode = "1.3"

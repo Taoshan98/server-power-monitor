@@ -33,3 +33,19 @@ RETENTION_DAYS=365
 
 # Automatic CSV Export of daily energy reports (1 = enabled, 0 = disabled)
 CSV_EXPORT_ENABLED=1
+
+# MQTT Integration for Home Assistant Auto-Discovery
+MQTT_ENABLED=0
+MQTT_HOST="localhost"
+MQTT_PORT=1883
+MQTT_USERNAME=""
+MQTT_PASSWORD=""
+MQTT_TOPIC_PREFIX="server-power-monitor"
+
+# Encrypted P2P Cluster Mesh Network (ChaCha20-Poly1305 Ciphers)
+P2P_ENABLED=0
+CLUSTER_SECRET=""
+P2P_PORT=7432
+# Optional space or comma separated list of WAN/Static peer IP addresses
+# Example: P2P_PEERS="192.168.1.50 203.0.113.10:7432"
+P2P_PEERS=""
