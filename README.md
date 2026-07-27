@@ -1,56 +1,69 @@
-# 🔌 Server Power Monitor
+# 🔌 Server Power Monitor (Rust Edition)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Bash](https://img.shields.io/badge/Language-Bash-4EAA25.svg)](https://www.gnu.org/software/bash/)
-[![Docker](https://img.shields.io/badge/Docker-Ready-2496ED.svg)](https://www.docker.com/)
+[![Rust](https://img.shields.io/badge/Language-Rust_2021-orange.svg)](https://www.rust-lang.org/)
+[![Tokio](https://img.shields.io/badge/Async-Tokio-blue.svg)](https://tokio.rs/)
+[![Docker](https://img.shields.io/badge/Docker-Multi--stage-2496ED.svg)](https://www.docker.com/)
 [![Platform](https://img.shields.io/badge/Platform-Linux-lightgrey.svg)](https://www.linux.org/)
 
-A professional, lightweight telemetry system for real-time power monitoring on Linux servers. Track CPU, GPU, and Disk energy consumption with beautiful terminal dashboards and automated Telegram reporting.
+Un sistema di telemetria e monitoraggio in tempo reale del consumo energetico per server Linux, riscritto interamente in **Rust** per garantire massima efficienza, zero overhead di runtime e reportistica Telegram dal layout moderno ed elegante.
 
 ---
 
-## ✨ Key Features
+## 📱 Anteprima Output Telegram
 
-- **🛡️ Comprehensive Monitoring**: 
-    - **Intel RAPL**: Precise measurements for Package (SoC), Cores, iGPU, and DRAM.
-    - **NVIDIA GPU**: Real-time power draw via `nvidia-smi` integration.
-    - **Storage Estimation**: Hybrid model for HDDs (standby/active detection) and SSDs (I/O stats based estimation).
-- **📊 Professional Dashboard**: 
-    - Color-coded terminal output with intuitive hardware icons.
-    - Smart sensor deduplication (handles multiple kernel interfaces cleanly).
-    - Power source detection (🔌 AC vs 🔋 Battery) with percentage tracking.
-- **📱 Telegram Integration**:
-    - **Periodic Updates**: Configurable status reports (e.g., every 1h, 6h, etc.).
-    - **Daily Summaries**: Complete daily energy consumption (kWh) and cost estimation.
-- **🐳 Container-First Design**: 
-    - Optimized **Debian Slim** Docker image (~30MB).
-    - Hardware passthrough support for both Intel and NVIDIA.
-- **⚡ Performance Focused**: Ultra-low overhead, written in pure Bash and Awk.
+I report inviati su Telegram sono in formato **HTML** a schede, con icone intuitive ed un **Contatore Storico Absolute (Lifetime)** che non perde mai un solo Watt o Centesimo dalla prima installazione:
+
+```html
+📅 REPORT ENERGETICO GIORNALIERO
+━━━━━━━━━━━━━━━━━━━━━━
+🖥️ Host: server-home
+📆 Data: 2026-07-27
+
+📦 Dettaglio Consumi:
+• 🔳 CPU Package: 0.1420 kWh (Picco: 65.2W)
+• 🧠 Cores: 0.0910 kWh (Picco: 42.1W)
+• 🎨 GPU NVIDIA RTX 3080: 0.4500 kWh (Picco: 210.0W)
+• 📀 SSD nvme0n1: 0.0150 kWh (Picco: 2.5W)
+
+💰 RIEPILOGO OGGI:
+├ ⚡ Consumo Totale: 0.6070 kWh
+└ 💶 Costo Stimato: 0.1821 EUR
+
+🏛️ CONTATORE STORICO ABSOLUTE (LIFETIME):
+├ 🗓️ Primo Giorno: 2026-05-10 (78 giorni)
+├ 📊 Totale Software: 45.3890 kWh (13.6167 EUR)
+└ 📉 Media Giornaliera: 0.5819 kWh/g (0.1745 EUR/g)
+```
 
 ---
 
-## 🚀 Quick Start
+## ✨ Caratteristiche Principali
 
-### Option A: Docker (Recommended)
-The fastest way to deploy, especially if you have an NVIDIA GPU.
+- **🏛️ Contatore Storico Indistruttibile (Lifetime Counter)**: Registra e preserva il consumo cumulativo (kWh ed EUR) di tutta la vita del software tramite il file `lifetime_base.env`. Anche se la retention policy pulisce i vecchi log giornalieri, il totale storico assoluto **non perde mai un singolo Watt**.
+- **📊 Terminal Dashboard TUI Live (Stile 3)**: Interfaccia a schermo intero con grafico Sparkline dell'andamento dei Watt, barrette di carico per ciascun componente e doppio contatore in basso (Consumo Oggi vs Contatore Storico Lifetime).
+- **🚨 Alert Telegram per Picchi di Potenza**: Notifica immediata su Telegram se il consumo in Watt del server supera la soglia impostata (`MAX_POWER_ALERT_WATTS`).
+- **🧹 Retention Policy Automatica**: Pulizia automatica configurabile dei file di log giornalieri più vecchi di N giorni (`RETENTION_DAYS`), con accorpamento automatico nel contatore storico permanente.
+- **📄 Export Automatico in CSV**: Salva automaticamente un report giornaliero in `history.csv` per facilitare analisi esterne e grafici su Excel.
 
-1. **Clone the repo**:
-   ```bash
-   git clone https://github.com/yourusername/server-power-monitor.git
-   cd server-power-monitor
-   ```
-2. **Configure**:
-   ```bash
-   cp server-power-monitor.conf.example server-power-monitor.conf
-   nano server-power-monitor.conf # Add your Telegram credentials
-   ```
-3. **Launch**:
-   ```bash
-   docker-compose up -d
-   ```
+---
 
-### Option B: Native Installation
-Ideal for bare-metal servers or lightweight environments.
+## 🚀 Guida Rapida
+
+### 1. Compilazione ed Esecuzione Locale (Cargo)
+
+Requisiti: Rust toolchain ([rustup.rs](https://rustup.rs/)).
+
+```bash
+# Compilazione ed avvio immediato in modalità release (consigliato con sudo per i registri RAPL)
+cargo build --release
+sudo ./target/release/server-power-monitor
+
+# Invio di un report di test su Telegram
+cargo run --release -- --test-report
+```
+
+### 2. Installazione Nativa come Servizio Systemd
 
 ```bash
 bash setup_service.sh
@@ -58,62 +71,23 @@ bash setup_service.sh
 
 ---
 
-## ⚙️ Configuration Reference
+## ⚙️ Riferimento Configurazione
 
-| Parameter | Description | Default |
+| Parametro | Descrizione | Default |
 |:----------|:------------|:--------|
-| `SAMPLE_INTERVAL` | Seconds between power samples | `5` |
-| `TARIFF_EUR_KWH` | Electricity cost per kWh | `0.30` |
-| `CURRENCY` | Currency symbol for reports | `EUR` |
-| `TELEGRAM_REPORT_INTERVAL_HOURS` | Frequency of intermediate Telegram reports | `6` |
-| `HDD_ACTIVE_W` | Estimated consumption for an active HDD | `5.0` |
-| `SSD_ACTIVE_W` | Estimated consumption for an active SSD | `2.5` |
+| `SAMPLE_INTERVAL` | Intervallo in secondi tra i campionamenti | `5` |
+| `TARIFF_EUR_KWH` | Costo dell'energia elettrica per kWh | `0.30` |
+| `CURRENCY` | Simbolo della valuta nei report | `EUR` |
+| `TELEGRAM_ENABLED` | Abilita (1) o disabilita (0) l'integrazione Telegram | `0` |
+| `TELEGRAM_BOT_TOKEN` | Token segreto del Bot Telegram | `""` |
+| `TELEGRAM_CHAT_ID` | ID della Chat/Gruppo Telegram | `""` |
+| `MAX_POWER_ALERT_WATTS` | Soglia di potenza in Watt per alert Telegram immediati (0 = disattivato) | `0` |
+| `RETENTION_DAYS` | Giorni di mantenimento dei log giornalieri (0 = conserva per sempre) | `365` |
+| `CSV_EXPORT_ENABLED` | Abilita (1) o disabilita (0) l'export in `history.csv` | `1` |
+| `HOST_LABEL` | Nome identificativo del server nei report | `hostname` |
 
 ---
 
-## 🛠️ Requirements
+## 📄 Licenza
 
-- **Kernel**: Linux 5.0+ with `intel-rapl` enabled.
-- **Hardware**: Intel CPU (Sandy Bridge or newer) or NVIDIA GPU.
-- **Packages**: `bash`, `gawk`, `curl`, `hdparm`.
-- **Permissions**: Root/Sudo access (required for hardware register access).
-
----
-
-## 📖 How it Works
-
-The system interfaces directly with the **Intel Running Average Power Limit (RAPL)** driver through the Linux `powercap` interface. It reads cumulative energy counters in micro-joules and calculates the instantaneous wattage based on the time delta between samples. For storage devices, it uses a state-machine that monitors rotational status and I/O traffic to apply pre-defined power profiles.
-
----
-
-## 🗺️ Roadmap & Next Steps
-
-Future features planned for development:
-
-- **🌐 Centralized Dashboard**: Ability to send telemetry from multiple nodes to a central aggregator for unified monitoring.
-- **🍎 Apple Silicon Support**: Extend monitoring to M1/M2/M3 chips (macOS support).
-- **🔴 AMD Hardware**: Native support for AMD Zen CPUs and Radeon GPUs (via `amdgpu` and `amd_energy`).
-- **📈 Advanced Integrations**: 
-    - Native **Prometheus Exporter** for Grafana visualization.
-    - **Home Assistant (MQTT)** integration for smart home energy tracking.
-- **🔔 Threshold Alerts**: Customizable Telegram alerts when power draw exceeds a specific limit.
-- **🖥️ Web UI**: A minimal, built-in local web interface for real-time graphs.
-
----
-
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request. For major changes, please open an issue first to discuss what you would like to change.
-
----
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-
----
-
-## ☕ Support
-
-If you find this project useful, consider giving it a ⭐ on GitHub!
+Rilasciato sotto licenza [MIT License](LICENSE).

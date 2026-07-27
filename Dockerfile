@@ -1,34 +1,45 @@
-# Universal Light Dockerfile (NVIDIA & Intel compatible)
+# Multi-stage Dockerfile for Server Power Monitor (Rust Edition)
+
+# --- Stage 1: Build binary ---
+FROM rust:latest AS builder
+
+WORKDIR /usr/src/app
+
+# Install build tools and SSL libraries
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy dependency manifests
+COPY Cargo.toml Cargo.lock ./
+
+# Copy source code and build release binary
+COPY src ./src
+RUN cargo build --release
+
+# --- Stage 2: Minimal runtime image ---
 FROM debian:bookworm-slim
 
-# Set locale to C for consistent numeric parsing
 ENV LC_NUMERIC=C
 
-# Install dependencies
+# Install runtime dependencies (SSL certificates, hdparm for disk power detection)
 RUN apt-get update && apt-get install -y \
-    bash \
-    curl \
-    gawk \
+    ca-certificates \
     hdparm \
-    sed \
-    grep \
-    coreutils \
+    procps \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Copy the script
-COPY server-power-monitor.sh .
-RUN chmod +x server-power-monitor.sh
+# Copy binary from build stage
+COPY --from=builder /usr/src/app/target/release/server-power-monitor /app/server-power-monitor
 
-# The script expects these directories
+# Create state directory
 RUN mkdir -p /app/state
 
-# Environment variables for configuration paths
 ENV STATE_DIR=/app/state
 ENV LOG_FILE=/app/server-power-monitor.log
 ENV CONFIG_FILE=/etc/server-power-monitor.conf
 
-# Run the script with line-buffering to ensure logs appear immediately
-ENTRYPOINT ["stdbuf", "-oL", "-eL", "/bin/bash", "server-power-monitor.sh"]
-
+ENTRYPOINT ["/app/server-power-monitor"]
