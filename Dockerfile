@@ -1,7 +1,7 @@
 # Multi-stage Dockerfile for Server Power Monitor (Rust Edition)
 
 # --- Stage 1: Build binary ---
-FROM rust:latest AS builder
+FROM rust:1-bookworm AS builder
 
 WORKDIR /usr/src/app
 
