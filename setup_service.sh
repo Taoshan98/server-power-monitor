@@ -18,8 +18,10 @@ fi
 
 # Load existing configuration as base if available
 if [ -f "$LOCAL_CONFIG" ]; then
+    # shellcheck source=/dev/null
     source "$LOCAL_CONFIG"
 elif [ -f "$CONFIG_TARGET" ]; then
+    # shellcheck source=/dev/null
     source "$CONFIG_TARGET"
 fi
 

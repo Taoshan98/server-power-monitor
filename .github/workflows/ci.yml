@@ -8,27 +8,37 @@ on:
     branches: [ "main" ]
 
 env:
- REGISTRY: ghcr.io
- IMAGE_NAME: ${{ github.repository }}
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  # 1. LINT STAGE: Check script quality
+  # 1. LINT STAGE: Check shell script quality
   lint:
     name: ShellCheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
       - name: Run ShellCheck
         uses: ludeeus/action-shellcheck@master
         with:
           scandir: '.'
           ignore_names: 'state'
 
-  # 2. BUILD STAGE: Build and Publish Docker Image
-  # This job only runs if the lint job succeeds
+  # 2. RUST TEST STAGE: Run cargo test suite
+  test:
+    name: Rust Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Run Cargo Test
+        run: cargo test --release
+
+  # 3. BUILD & PUBLISH STAGE: Build and Publish Docker Image
   deploy:
     name: Docker Build & Publish
-    needs: lint
+    needs: [lint, test]
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request'
     permissions:
@@ -37,13 +47,13 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@v3
 
       - name: Log into registry ${{ env.REGISTRY }}
-        uses: docker/login-action@v4
+        uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -51,7 +61,7 @@ jobs:
 
       - name: Extract Docker metadata
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
@@ -60,7 +70,7 @@ jobs:
             type=sha
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: true
@@ -68,4 +78,3 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
