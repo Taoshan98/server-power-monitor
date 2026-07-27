@@ -5,7 +5,6 @@ server-power-monitor.log
 
 # Rust target build output
 /target/
-Cargo.lock
 
 # Temporary files
 *.tmp
