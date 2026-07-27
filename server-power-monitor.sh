@@ -208,7 +208,8 @@ _build_report_body() {
     local friendly kwh
     friendly=$(get_friendly_name "$id")
     kwh=$(j_to_kwh "$j")
-    local line="• ${friendly}: <code>${kwh}</code> kWh (Peak: <code>${peak}</code>W)\n"
+    local line
+    printf -v line '• %s: <code>%s</code> kWh (Peak: <code>%s</code>W)\n' "$friendly" "$kwh" "$peak"
     case "$friendly" in
       *CPU*|*Cores*) section_cpu+="$line" ;;
       *GPU*)         section_gpu+="$line" ;;
@@ -231,12 +232,33 @@ _build_report_body() {
   _REPORT_COST="$cost"
 }
 
+# Compute cumulative totals across all daily state files.
+# Sets: _ALLTIME_KWH, _ALLTIME_COST, _ALLTIME_DAYS, _ALLTIME_FIRST_DATE
+_compute_alltime_totals() {
+  local alltime_kwh=0 day_count=0 first_date=""
+  for f in "$STATE_DIR"/today_*.env; do
+    [[ -f "$f" ]] || continue
+    local day_body
+    day_body=$(_build_report_body "$f" 2>/dev/null) || continue
+    alltime_kwh=$(awk_sum "$alltime_kwh" "$(awk -v k="$_REPORT_TOTAL_KWH" 'BEGIN { printf "%.6f", k+0 }')")
+    (( day_count++ ))
+    local fdate
+    fdate=$(basename "$f" | sed 's/^today_//;s/\.env$//')
+    [[ -z "$first_date" || "$fdate" < "$first_date" ]] && first_date="$fdate"
+  done
+  _ALLTIME_KWH=$(awk -v k="$alltime_kwh" 'BEGIN { printf "%.4f", k }')
+  _ALLTIME_COST=$(calc_cost "$_ALLTIME_KWH")
+  _ALLTIME_DAYS="$day_count"
+  _ALLTIME_FIRST_DATE="$first_date"
+}
+
 generate_report() {
   local title="$1" label="$2" source_file="$3"
   [[ -f "$source_file" ]] || return 0
   local body
   body=$(_build_report_body "$source_file")
-  local msg="<b>${title}</b>\n<b>Host:</b> <code>${HOST_LABEL}</code>\n<b>${label}</b>\n\n${body}"
+  local msg
+  msg=$(printf '<b>%s</b>\n<b>Host:</b> <code>%s</code>\n<b>%s</b>\n\n%s' "$title" "$HOST_LABEL" "$label" "$body")
   send_telegram "$msg"
 }
 
@@ -248,7 +270,23 @@ generate_daily_report() {
   local date="$1"
   local file="$STATE_DIR/today_${date}.env"
   generate_report "📅 Daily Energy Report" "Date: <code>${date}</code>" "$file"
-  echo "[$(date '+%F %T')] REPORT ${date} kWh=${_REPORT_TOTAL_KWH} cost=${_REPORT_COST} ${CURRENCY}" >> "$LOG_FILE"
+  local day_kwh="$_REPORT_TOTAL_KWH" day_cost="$_REPORT_COST"
+
+  # Compute and send cumulative summary
+  _compute_alltime_totals
+  local avg_kwh avg_cost
+  avg_kwh=$(awk -v t="$_ALLTIME_KWH" -v d="$_ALLTIME_DAYS" 'BEGIN { printf "%.4f", (d > 0) ? t/d : 0 }')
+  avg_cost=$(awk -v t="$_ALLTIME_COST" -v d="$_ALLTIME_DAYS" 'BEGIN { printf "%.4f", (d > 0) ? t/d : 0 }')
+
+  local summary
+  summary=$(printf '<b>📈 Cumulative Summary</b>\n<b>Host:</b> <code>%s</code>\n<b>Period:</b> <code>%s</code> → <code>%s</code> (<code>%s</code> days)\n\n📅 <b>Today:</b> <code>%s</code> kWh — <code>%s</code> %s\n📊 <b>All-time:</b> <code>%s</code> kWh — <code>%s</code> %s\n📉 <b>Daily avg:</b> <code>%s</code> kWh — <code>%s</code> %s\n' \
+    "$HOST_LABEL" "$_ALLTIME_FIRST_DATE" "$date" "$_ALLTIME_DAYS" \
+    "$day_kwh" "$day_cost" "$CURRENCY" \
+    "$_ALLTIME_KWH" "$_ALLTIME_COST" "$CURRENCY" \
+    "$avg_kwh" "$avg_cost" "$CURRENCY")
+  send_telegram "$summary"
+
+  echo "[$(date '+%F %T')] REPORT ${date} kWh=${day_kwh} cost=${day_cost} ${CURRENCY} | alltime=${_ALLTIME_KWH} kWh" >> "$LOG_FILE"
   echo "$date" > "$LAST_REPORT_FILE"
 }
 
