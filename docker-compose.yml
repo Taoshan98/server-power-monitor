@@ -4,11 +4,52 @@ services:
     container_name: server-power-monitor
     privileged: true
     network_mode: host
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # General Settings
+      - SAMPLE_INTERVAL=${SAMPLE_INTERVAL:-5}
+      - TARIFF_EUR_KWH=${TARIFF_EUR_KWH:-0.30}
+      - CURRENCY=${CURRENCY:-EUR}
+      - HOST_LABEL=${HOST_LABEL:-Server-Docker}
+
+      # Hardware Estimation Overrides (Watts)
+      - HDD_ACTIVE_W=${HDD_ACTIVE_W:-5.0}
+      - HDD_STANDBY_W=${HDD_STANDBY_W:-0.5}
+      - SSD_ACTIVE_W=${SSD_ACTIVE_W:-2.5}
+      - SSD_IDLE_W=${SSD_IDLE_W:-0.3}
+
+      # Retention, Alerts & CSV Export
+      - RETENTION_DAYS=${RETENTION_DAYS:-365}
+      - MAX_POWER_ALERT_WATTS=${MAX_POWER_ALERT_WATTS:-0}
+      - CSV_EXPORT_ENABLED=${CSV_EXPORT_ENABLED:-1}
+
+      # Telegram Integration
+      - TELEGRAM_ENABLED=${TELEGRAM_ENABLED:-0}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+      - TELEGRAM_REPORT_INTERVAL_HOURS=${TELEGRAM_REPORT_INTERVAL_HOURS:-6}
+      - REPORT_HOUR=${REPORT_HOUR:-23}
+      - REPORT_MINUTE=${REPORT_MINUTE:-55}
+
+      # MQTT Integration (Home Assistant Auto-Discovery / EMQX)
+      - MQTT_ENABLED=${MQTT_ENABLED:-1}
+      - MQTT_HOST=${MQTT_HOST:-192.168.10.50}
+      - MQTT_PORT=${MQTT_PORT:-1883}
+      - MQTT_USERNAME=${MQTT_USERNAME:-}
+      - MQTT_PASSWORD=${MQTT_PASSWORD:-}
+      - MQTT_TOPIC_PREFIX=${MQTT_TOPIC_PREFIX:-server-power-monitor}
+
+      # Encrypted P2P Cluster Mesh Network (ChaCha20-Poly1305 Ciphers)
+      - P2P_ENABLED=${P2P_ENABLED:-1}
+      - CLUSTER_SECRET=${CLUSTER_SECRET:-il_mio_segreto_flotta_p2p_2026}
+      - P2P_PORT=${P2P_PORT:-7432}
+      - P2P_PEERS=${P2P_PEERS:-}
     volumes:
       - /sys:/sys:ro
       - /dev:/dev:ro
       - ./state:/app/state
-      - ./server-power-monitor.conf:/etc/server-power-monitor.conf:ro
     restart: unless-stopped
     deploy:
       resources:

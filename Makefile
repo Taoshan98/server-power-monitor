@@ -6,7 +6,7 @@ CONFDIR = /etc
 SYSTEMDDIR = /etc/systemd/system
 
 BINARY = server-power-monitor
-CONFIG = server-power-monitor.conf
+CONFIG = server-power-monitor.env
 SERVICE = server-power-monitor.service
 
 .PHONY: all build install uninstall run clean
@@ -21,7 +21,7 @@ install: build
 	@echo "Installing system binary and service..."
 	install -D -m 755 target/release/$(BINARY) $(BINDIR)/$(BINARY)
 	@if [ ! -f $(CONFDIR)/$(CONFIG) ]; then \
-		cp server-power-monitor.conf.example $(CONFDIR)/$(CONFIG); \
+		cp .env.example $(CONFDIR)/$(CONFIG); \
 		echo "Created $(CONFDIR)/$(CONFIG) from example values."; \
 	fi
 

@@ -4,8 +4,8 @@
 set -e
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_TARGET="/etc/server-power-monitor.conf"
-LOCAL_CONFIG="$PROJECT_DIR/server-power-monitor.conf"
+CONFIG_TARGET="/etc/server-power-monitor.env"
+LOCAL_CONFIG="$PROJECT_DIR/.env"
 
 echo "--- 🔌 Server Power Monitor (Rust Edition) Setup ---"
 
@@ -36,6 +36,12 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
     # Use Makefile for system installation
     sudo make install PREFIX="$PREFIX"
 
+    # Configure firewall (UFW) automatically if active
+    if command -v ufw &>/dev/null && sudo ufw status 2>/dev/null | grep -q "Status: active"; then
+        echo "🔓 Apertura automatica porta 7432/udp nel firewall UFW..."
+        sudo ufw allow 7432/udp &>/dev/null || true
+    fi
+
     # Telegram configuration
     if [[ -z "${TELEGRAM_BOT_TOKEN:-}" ]]; then
         echo ""
@@ -64,5 +70,5 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
 
 else
     echo "Modalità Locale: puoi compilare ed avviare l'applicazione con 'cargo run --release'"
-    echo "Assicurati di avere un file 'server-power-monitor.conf' locale se desideri personalizzare i parametri."
+    echo "Assicurati di avere un file '.env' locale se desideri personalizzare i parametri."
 fi

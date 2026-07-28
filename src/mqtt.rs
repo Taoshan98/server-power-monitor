@@ -40,8 +40,7 @@ pub struct MqttService {
 
 impl MqttService {
     pub fn start(config: &Config) -> Result<mpsc::Sender<MqttStatePayload>> {
-        let clean_host = config.host_label.to_lowercase().replace(|c: char| !c.is_alphanumeric(), "_");
-        let client_id = format!("spm_{}", clean_host);
+        let client_id = format!("server-power-monitor-{}", config.host_label);
 
         let mut mqttoptions = MqttOptions::new(client_id, &config.mqtt_host, config.mqtt_port);
         mqttoptions.set_keep_alive(Duration::from_secs(30));
@@ -141,6 +140,32 @@ impl MqttService {
             "device": device_info
         });
         self.publish_disc_sensor(&clean_host, "lifetime_kwh", &lifetime_kwh_config).await?;
+
+        // 4. Sensore Costo Oggi (EUR / Valuta)
+        let today_cost_config = serde_json::json!({
+            "name": format!("{} Cost Today", host_label),
+            "unique_id": format!("spm_{}_today_cost", clean_host),
+            "state_topic": state_topic,
+            "value_template": "{{ value_json.today_cost }}",
+            "unit_of_measurement": payload.currency,
+            "device_class": "monetary",
+            "state_class": "total_increasing",
+            "device": device_info
+        });
+        self.publish_disc_sensor(&clean_host, "today_cost", &today_cost_config).await?;
+
+        // 5. Sensore Costo Storico Lifetime (EUR / Valuta)
+        let lifetime_cost_config = serde_json::json!({
+            "name": format!("{} Lifetime Cost", host_label),
+            "unique_id": format!("spm_{}_lifetime_cost", clean_host),
+            "state_topic": state_topic,
+            "value_template": "{{ value_json.alltime_cost }}",
+            "unit_of_measurement": payload.currency,
+            "device_class": "monetary",
+            "state_class": "total_increasing",
+            "device": device_info
+        });
+        self.publish_disc_sensor(&clean_host, "lifetime_cost", &lifetime_cost_config).await?;
 
         for (sensor_id, _) in &payload.sensors {
             let clean_sensor_id = sensor_id.to_lowercase().replace(|c: char| !c.is_alphanumeric(), "_");

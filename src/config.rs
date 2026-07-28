@@ -94,7 +94,7 @@ impl Default for Config {
             p2p_port: 7432,
             p2p_peers: Vec::new(),
 
-            config_file: PathBuf::from("server-power-monitor.conf"),
+            config_file: PathBuf::from(".env"),
             state_dir: PathBuf::from("./state"),
             log_file: PathBuf::from("./server-power-monitor.log"),
             csv_file: PathBuf::from("./history.csv"),
@@ -103,7 +103,7 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Carica la configurazione combinando default, file `.conf` ed ambiente.
+    /// Carica la configurazione combinando default, file `.env` ed ambiente.
     pub fn load() -> Self {
         let mut config = Config::default();
 
@@ -114,17 +114,21 @@ impl Config {
         
         let current_dir = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
-        let local_conf = if current_dir.join("server-power-monitor.conf").exists() {
-            current_dir.join("server-power-monitor.conf")
-        } else if exe_dir.join("server-power-monitor.conf").exists() {
-            exe_dir.join("server-power-monitor.conf")
+        let local_env = if current_dir.join(".env").exists() {
+            current_dir.join(".env")
+        } else if current_dir.join("server-power-monitor.env").exists() {
+            current_dir.join("server-power-monitor.env")
+        } else if exe_dir.join(".env").exists() {
+            exe_dir.join(".env")
+        } else if exe_dir.join("server-power-monitor.env").exists() {
+            exe_dir.join("server-power-monitor.env")
         } else {
-            PathBuf::from("/etc/server-power-monitor.conf")
+            PathBuf::from("/etc/server-power-monitor.env")
         };
 
         config.config_file = env::var("CONFIG_FILE")
             .map(PathBuf::from)
-            .unwrap_or(local_conf);
+            .unwrap_or(local_env);
 
         let is_local = current_dir.join("server-power-monitor.conf").exists() || env::var("INVOCATION_ID").is_err();
 

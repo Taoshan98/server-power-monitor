@@ -1,6 +1,7 @@
 # Local state and configuration
 state/
 server-power-monitor.conf
+.env
 server-power-monitor.log
 
 # Rust target build output

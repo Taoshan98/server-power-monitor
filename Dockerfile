@@ -40,6 +40,6 @@ RUN mkdir -p /app/state
 
 ENV STATE_DIR=/app/state
 ENV LOG_FILE=/app/server-power-monitor.log
-ENV CONFIG_FILE=/etc/server-power-monitor.conf
+ENV CONFIG_FILE=/app/.env
 
 ENTRYPOINT ["/app/server-power-monitor"]
