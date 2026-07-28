@@ -285,16 +285,16 @@ impl Config {
             if let Ok(v) = val.parse() { self.tariff_eur_kwh = v; }
         }
         if let Ok(val) = env::var("CURRENCY") {
-            self.currency = val;
+            self.currency = trim_quotes(&val);
         }
         if let Ok(val) = env::var("TELEGRAM_ENABLED") {
             self.telegram_enabled = val == "1" || val.eq_ignore_ascii_case("true");
         }
         if let Ok(val) = env::var("TELEGRAM_BOT_TOKEN") {
-            self.telegram_bot_token = val;
+            self.telegram_bot_token = trim_quotes(&val);
         }
         if let Ok(val) = env::var("TELEGRAM_CHAT_ID") {
-            self.telegram_chat_id = val;
+            self.telegram_chat_id = trim_quotes(&val);
         }
         if let Ok(val) = env::var("REPORT_HOUR") {
             if let Ok(v) = val.parse() { self.report_hour = v; }
@@ -306,11 +306,12 @@ impl Config {
             if let Ok(v) = val.parse() { self.telegram_report_interval_hours = v; }
         }
         if let Ok(val) = env::var("HOST_LABEL") {
-            if !val.is_empty() {
-                if val == "$(hostname)" || val == "$HOSTNAME" || val == "`hostname`" {
+            let clean = trim_quotes(&val);
+            if !clean.is_empty() {
+                if clean == "$(hostname)" || clean == "$HOSTNAME" || clean == "`hostname`" {
                     self.host_label = get_hostname().unwrap_or_else(|| "localhost".to_string());
                 } else {
-                    self.host_label = val;
+                    self.host_label = clean;
                 }
             }
         }
@@ -327,37 +328,47 @@ impl Config {
             self.mqtt_enabled = val == "1" || val.eq_ignore_ascii_case("true");
         }
         if let Ok(val) = env::var("MQTT_HOST") {
-            self.mqtt_host = val;
+            self.mqtt_host = trim_quotes(&val);
         }
         if let Ok(val) = env::var("MQTT_PORT") {
             if let Ok(v) = val.parse() { self.mqtt_port = v; }
         }
         if let Ok(val) = env::var("MQTT_USERNAME") {
-            self.mqtt_username = val;
+            self.mqtt_username = trim_quotes(&val);
         }
         if let Ok(val) = env::var("MQTT_PASSWORD") {
-            self.mqtt_password = val;
+            self.mqtt_password = trim_quotes(&val);
         }
         if let Ok(val) = env::var("MQTT_TOPIC_PREFIX") {
-            self.mqtt_topic_prefix = val;
+            self.mqtt_topic_prefix = trim_quotes(&val);
         }
         if let Ok(val) = env::var("P2P_ENABLED") {
             self.p2p_enabled = val == "1" || val.eq_ignore_ascii_case("true");
         }
         if let Ok(val) = env::var("CLUSTER_SECRET") {
-            self.cluster_secret = val;
+            self.cluster_secret = trim_quotes(&val);
         }
         if let Ok(val) = env::var("P2P_PORT") {
             if let Ok(v) = val.parse() { self.p2p_port = v; }
         }
         if let Ok(val) = env::var("P2P_PEERS") {
-            self.p2p_peers = val
+            self.p2p_peers = trim_quotes(&val)
                 .split(&[',', ' '][..])
-                .map(|s| s.trim().to_string())
+                .map(|s| trim_quotes(s.trim()))
                 .filter(|s| !s.is_empty())
                 .collect();
         }
     }
+}
+
+fn trim_quotes(s: &str) -> String {
+    let trimmed = s.trim();
+    if (trimmed.starts_with('"') && trimmed.ends_with('"')) || (trimmed.starts_with('\'') && trimmed.ends_with('\'')) {
+        if trimmed.len() >= 2 {
+            return trimmed[1..trimmed.len() - 1].to_string();
+        }
+    }
+    trimmed.to_string()
 }
 
 fn get_hostname() -> Option<String> {

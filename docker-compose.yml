@@ -4,9 +4,6 @@ services:
     container_name: server-power-monitor
     privileged: true
     network_mode: host
-    env_file:
-      - path: .env
-        required: false
     environment:
       # General Settings
       - SAMPLE_INTERVAL=${SAMPLE_INTERVAL:-5}
